@@ -86,9 +86,26 @@ jobs:
       - name: 拉取 Dart 依赖
         run: flutter pub get
 
+      - name: 解析版本名
+        id: version
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            echo "name=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "name=" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: 构建 Release APK
-        # versionName 沿用 pubspec 的 1.0.0；versionCode 用流水号，保证后续装机可覆盖升级
-        run: flutter build apk --release --build-number=${GITHUB_RUN_NUMBER}
+        # 打 tag 时 versionName 取 tag 号（v1.1.0 → 1.1.0），保证包内版本与 Release 一致；
+        # versionCode 一律用流水号，保证后续装机可以覆盖升级
+        env:
+          VERSION_NAME: ${{ steps.version.outputs.name }}
+        run: |
+          if [ -n "$VERSION_NAME" ]; then
+            flutter build apk --release --build-name="$VERSION_NAME" --build-number=${GITHUB_RUN_NUMBER}
+          else
+            flutter build apk --release --build-number=${GITHUB_RUN_NUMBER}
+          fi
 
       - name: 重命名为可读文件名
         id: apk
@@ -145,12 +162,21 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release create "${GITHUB_REF_NAME}" \
-            "clippings-app-${GITHUB_RUN_NUMBER}.apk#剪藏库 APK（Release）" \
-            --title "剪藏库 ${GITHUB_REF_NAME}" \
-            --notes "自动构建于 ${GITHUB_SHA:0:7}。
+          set -euo pipefail
+          ASSET="clippings-app-${GITHUB_RUN_NUMBER}.apk"
+          if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
+            # 同一个 tag 重跑时覆盖附件，避免 Release 上挂着旧包
+            echo "Release 已存在，覆盖上传附件"
+            gh release upload "${GITHUB_REF_NAME}" "$ASSET" --clobber
+          else
+            gh release create "${GITHUB_REF_NAME}" \
+              "$ASSET#剪藏库 APK（Release）" \
+              --title "剪藏库 ${GITHUB_REF_NAME}" \
+              --notes "自动构建于 ${GITHUB_SHA:0:7}。
 
-          - 安装包：clippings-app-${GITHUB_RUN_NUMBER}.apk（Release，已用 debug 密钥签名，可直接安装）
+          - 安装包：$ASSET（Release，已用 debug 密钥签名，可直接安装）
           - 要求：Android 6.0 及以上
-          - 装好后在任意 APP 的分享面板里选择「剪藏库」即可保存内容" \
-            --generate-notes || echo "::warning::Release 创建失败，可能已存在同名 Release"
+          - 装好后在任意 APP 的分享面板里选择「剪藏库」即可保存内容
+          - 同一版本重跑构建会覆盖此附件，版本号以 tag 为准" \
+              --generate-notes
+          fi
