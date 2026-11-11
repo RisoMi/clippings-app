@@ -1,0 +1,156 @@
+name: Build APK
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+env:
+  FLUTTER_VERSION: '3.47.2'
+  JAVA_VERSION: '17'
+
+jobs:
+  # ---------------------------------------------------------------- 校验
+  verify:
+    name: 静态分析 + 单元测试
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: 拉取代码
+        uses: actions/checkout@v4
+
+      - name: 安装 JDK ${{ env.JAVA_VERSION }}
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+
+      - name: 安装 Flutter ${{ env.FLUTTER_VERSION }}
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - name: 拉取 Dart 依赖
+        run: flutter pub get
+
+      - name: 静态分析
+        run: flutter analyze --no-fatal-infos
+
+      - name: 单元测试
+        run: flutter test --reporter expanded
+
+  # ---------------------------------------------------------------- 出包
+  android:
+    name: 构建 Release APK
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: 拉取代码
+        uses: actions/checkout@v4
+
+      - name: 安装 JDK ${{ env.JAVA_VERSION }}
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+
+      - name: 安装 Flutter ${{ env.FLUTTER_VERSION }}
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - name: 缓存 Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('android/**/*.gradle*', 'android/gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: gradle-${{ runner.os }}-
+
+      - name: 拉取 Dart 依赖
+        run: flutter pub get
+
+      - name: 构建 Release APK
+        # versionName 沿用 pubspec 的 1.0.0；versionCode 用流水号，保证后续装机可覆盖升级
+        run: flutter build apk --release --build-number=${GITHUB_RUN_NUMBER}
+
+      - name: 重命名为可读文件名
+        id: apk
+        run: |
+          set -euo pipefail
+          SRC=build/app/outputs/flutter-apk/app-release.apk
+          NAME=clippings-app-${GITHUB_RUN_NUMBER}.apk
+          cp "$SRC" "$NAME"
+          ls -lh "$SRC" "$NAME"
+          echo "path=$NAME" >> "$GITHUB_OUTPUT"
+          echo "size=$(du -h "$SRC" | cut -f1)" >> "$GITHUB_OUTPUT"
+
+      # 这一步是本项目的关键断言：确认「分享接收」真的被打进了成品，
+      # 而不只是代码里写了。Manifest 缺项时这里会直接失败。
+      - name: 校验 APK 内的分享入口
+        run: |
+          set -uo pipefail
+          APK=build/app/outputs/flutter-apk/app-release.apk
+          AAPT2=$(find "${ANDROID_HOME}/build-tools" -name aapt2 -type f 2>/dev/null | sort -V | tail -1)
+          if [ -z "$AAPT2" ]; then
+            echo "::warning::未找到 aapt2，跳过 Manifest 校验"
+            exit 0
+          fi
+          "$AAPT2" dump xmltree "$APK" --file AndroidManifest.xml > /tmp/manifest.txt
+          FAIL=0
+          for token in \
+            "android.intent.action.SEND" \
+            "android.intent.action.SEND_MULTIPLE" \
+            "text/plain" \
+            "text/html" \
+            "image/*" \
+            "android.support.FILE_PROVIDER_PATHS" \
+            "com.stonemii.clippings.MainActivity"
+          do
+            if grep -qF "$token" /tmp/manifest.txt; then
+              echo "✅ $token"
+            else
+              echo "❌ 缺少 $token"
+              FAIL=1
+            fi
+          done
+          exit $FAIL
+
+      - name: 上传 APK 产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: clippings-app-apk-${{ github.run_number }}
+          path: clippings-app-${{ github.run_number }}.apk
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: 附加到 GitHub Release（仅打 tag 时）
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            "clippings-app-${GITHUB_RUN_NUMBER}.apk#剪藏库 APK（Release）" \
+            --title "剪藏库 ${GITHUB_REF_NAME}" \
+            --notes "自动构建于 ${GITHUB_SHA:0:7}。
+
+          - 安装包：clippings-app-${GITHUB_RUN_NUMBER}.apk（Release，已用 debug 密钥签名，可直接安装）
+          - 要求：Android 6.0 及以上
+          - 装好后在任意 APP 的分享面板里选择「剪藏库」即可保存内容" \
+            --generate-notes || echo "::warning::Release 创建失败，可能已存在同名 Release"

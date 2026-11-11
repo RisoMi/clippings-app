@@ -1,0 +1,532 @@
+/// 08 粘贴速存 / 02 分享速存确认：识别剪贴板或分享内容 → 预览 → 一键入库。
+library;
+
+import 'dart:io';
+
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+
+import '../bridge.dart';
+import '../core.dart';
+import '../models.dart';
+import '../store.dart';
+import '../theme.dart';
+import '../widgets.dart';
+
+/// 待保存草稿（尚未入库）
+class PasteDraft {
+  final ClipType type;
+  String title;
+  String summary;
+  String source;
+  final String url;
+  final String domain;
+  final List<String> tags;
+  final String? imagePath;
+
+  PasteDraft({
+    required this.type,
+    required this.title,
+    required this.summary,
+    required this.source,
+    required this.url,
+    required this.domain,
+    required this.tags,
+    this.imagePath,
+  });
+}
+
+/// 系统分享内容 → 草稿
+PasteDraft? buildDraftFromShare(SharePayload payload) {
+  final known = ClipStore.instance.tagCounts;
+
+  if (payload.type == 'image' && (payload.imagePath?.isNotEmpty ?? false)) {
+    final now = DateTime.now();
+    final detected = Detected(
+      type: ClipType.image,
+      title: payload.title.trim().isEmpty ? '图片 ${formatClock(now)} 收藏' : payload.title.trim(),
+      summary: payload.text.trim().isEmpty ? '来自系统分享的图片' : payload.text.trim(),
+      source: '系统分享 · 图片',
+      url: '',
+      domain: '',
+    );
+    return PasteDraft(
+      type: ClipType.image,
+      title: detected.title,
+      summary: detected.summary,
+      source: detected.source,
+      url: '',
+      domain: '',
+      tags: suggestTags(detected, known),
+      imagePath: payload.imagePath,
+    );
+  }
+
+  final detected = detectFromShare(
+    title: payload.title,
+    text: payload.text,
+    url: payload.url,
+  );
+  if (detected == null) return null;
+
+  return PasteDraft(
+    type: detected.type,
+    title: detected.title,
+    summary: detected.summary,
+    source: detected.source,
+    url: detected.url,
+    domain: detected.domain,
+    tags: suggestTags(detected, known),
+  );
+}
+
+class PastePage extends StatefulWidget {
+  final PasteDraft? initial;
+
+  const PastePage({super.key, this.initial});
+
+  @override
+  State<PastePage> createState() => _PastePageState();
+}
+
+class _PastePageState extends State<PastePage> {
+  final TextEditingController _manual = TextEditingController();
+  PasteDraft? _draft;
+  bool _busy = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _draft = widget.initial;
+  }
+
+  @override
+  void dispose() {
+    _manual.dispose();
+    super.dispose();
+  }
+
+  Future<void> _readClipboard() async {
+    setState(() => _busy = true);
+    try {
+      final data = await Clipboard.getData(Clipboard.kTextPlain);
+      final text = data?.text ?? '';
+      if (text.trim().isEmpty) {
+        if (mounted) showToast(context, '剪贴板里没有可识别的内容');
+        return;
+      }
+      final detected = detectContent(text: text);
+      if (detected == null) {
+        if (mounted) showToast(context, '没识别出内容');
+        return;
+      }
+      if (!mounted) return;
+      setState(() {
+        _draft = PasteDraft(
+          type: detected.type,
+          title: detected.title,
+          summary: detected.summary,
+          source: detected.source,
+          url: detected.url,
+          domain: detected.domain,
+          tags: suggestTags(detected, ClipStore.instance.tagCounts),
+        );
+      });
+    } catch (_) {
+      if (mounted) showToast(context, '读取剪贴板被拒绝，请手动粘贴');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  void _detectManual() {
+    final text = _manual.text;
+    if (text.trim().isEmpty) {
+      showToast(context, '先粘贴或输入一点内容');
+      return;
+    }
+    final detected = detectContent(text: text);
+    if (detected == null) {
+      showToast(context, '没识别出内容');
+      return;
+    }
+    setState(() {
+      _draft = PasteDraft(
+        type: detected.type,
+        title: detected.title,
+        summary: detected.summary,
+        source: detected.source,
+        url: detected.url,
+        domain: detected.domain,
+        tags: suggestTags(detected, ClipStore.instance.tagCounts),
+      );
+    });
+  }
+
+  Future<void> _save() async {
+    final draft = _draft;
+    if (draft == null) return;
+    setState(() => _busy = true);
+    try {
+      String? fileName;
+      if (draft.imagePath != null) {
+        fileName = await ClipStore.instance.adoptImage(draft.imagePath!);
+      }
+      final clip = Clip(
+        id: uid(),
+        type: draft.type,
+        title: draft.title,
+        summary: draft.summary,
+        source: draft.source,
+        url: draft.url,
+        domain: draft.domain,
+        tags: draft.tags,
+        createdAt: DateTime.now(),
+        imageFileName: fileName,
+      );
+      await ClipStore.instance.addClip(clip);
+      await ClipStore.instance.ensureTags(draft.tags);
+      if (!mounted) return;
+      Navigator.of(context).pop();
+      showToast(context, '已保存到剪藏库');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _addTag() async {
+    final controller = TextEditingController();
+    final name = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('添加标签', style: TextStyle(fontSize: 16)),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          decoration: const InputDecoration(hintText: '例如：效率工具'),
+          onSubmitted: (value) => Navigator.of(context).pop(value),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(context).pop(), child: const Text('取消')),
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(controller.text),
+            child: const Text('添加'),
+          ),
+        ],
+      ),
+    );
+    final trimmed = (name ?? '').trim();
+    if (trimmed.isEmpty || _draft == null) return;
+    if (!_draft!.tags.contains(trimmed)) {
+      setState(() => _draft!.tags.add(trimmed));
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.colors;
+    final draft = _draft;
+    return Scaffold(
+      backgroundColor: c.bg,
+      appBar: AppBar(
+        leading: IconButton(
+          icon: Icon(draft == null ? Icons.arrow_back_ios_new_rounded : Icons.close_rounded, size: 18),
+          onPressed: () => Navigator.of(context).pop(),
+        ),
+        title: Text(draft == null ? '粘贴速存' : '确认保存'),
+        actions: [
+          if (draft == null)
+            IconButton(
+              icon: const Icon(Icons.content_paste_rounded, size: 19),
+              onPressed: _busy ? null : _readClipboard,
+            )
+          else
+            IconButton(
+              icon: const Icon(Icons.restart_alt_rounded, size: 19),
+              onPressed: () => setState(() => _draft = null),
+            ),
+        ],
+      ),
+      body: draft == null ? _buildEmpty(context) : _buildConfirm(context, draft),
+    );
+  }
+
+  Widget _buildEmpty(BuildContext context) {
+    final c = context.colors;
+    return ListView(
+      padding: const EdgeInsets.fromLTRB(20, 6, 20, 40),
+      children: [
+        Text('自动检测已开启', style: TextStyle(fontSize: 12, color: c.accent, fontWeight: FontWeight.w500)),
+        const SizedBox(height: 4),
+        Text('剪贴板里有什么', style: Theme.of(context).textTheme.headlineLarge),
+        const SizedBox(height: 6),
+        Text(
+          '复制链接或文字后点下面的按钮读取；也可以直接把内容粘贴到输入框。',
+          style: TextStyle(fontSize: 12, height: 1.7, color: c.sub),
+        ),
+        const SizedBox(height: 16),
+        const _StepBar(current: 2),
+        const SizedBox(height: 20),
+        FilledButton.icon(
+          onPressed: _busy ? null : _readClipboard,
+          icon: _busy
+              ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
+              : const Icon(Icons.content_paste_rounded, size: 18),
+          label: const Text('读取剪贴板'),
+        ),
+        const SizedBox(height: 12),
+        Container(
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(color: c.soft, borderRadius: BorderRadius.circular(AppRadii.row)),
+          child: Text(
+            '浏览器与系统出于隐私限制，读取剪贴板需要你点一下授权。内容只在本机识别，不上传。',
+            style: TextStyle(fontSize: 11, height: 1.7, color: c.sub),
+          ),
+        ),
+        const SizedBox(height: 24),
+        Text('手动粘贴或输入', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w500, color: c.sub)),
+        const SizedBox(height: 8),
+        TextField(
+          controller: _manual,
+          maxLines: 5,
+          minLines: 3,
+          decoration: const InputDecoration(hintText: '粘贴链接、一段文字，或直接输入想法…'),
+        ),
+        const SizedBox(height: 12),
+        OutlinedButton(onPressed: _detectManual, child: const Text('识别并预览')),
+      ],
+    );
+  }
+
+  Widget _buildConfirm(BuildContext context, PasteDraft draft) {
+    final c = context.colors;
+    return ListView(
+      padding: const EdgeInsets.fromLTRB(20, 6, 20, 40),
+      children: [
+        Text(
+          '识别完成 · ${draft.type.label}',
+          style: TextStyle(fontSize: 12, color: c.sub, fontWeight: FontWeight.w500),
+        ),
+        const SizedBox(height: 4),
+        Text(
+          switch (draft.type) {
+            ClipType.link => '剪贴板里有链接',
+            ClipType.image => '检测到图片',
+            ClipType.text => '检测到一段文字',
+          },
+          style: Theme.of(context).textTheme.headlineLarge,
+        ),
+        const SizedBox(height: 6),
+        Text(
+          '自动识别为${draft.type.label}，不用选类型、不用填表单。',
+          style: TextStyle(fontSize: 12, height: 1.7, color: c.sub),
+        ),
+        const SizedBox(height: 16),
+        const _StepBar(current: 2),
+        const SizedBox(height: 16),
+        if (draft.type == ClipType.link && draft.url.isNotEmpty)
+          Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: c.accentSoft,
+              borderRadius: BorderRadius.circular(AppRadii.row),
+              border: Border.all(color: c.accentLine),
+            ),
+            child: Row(
+              children: [
+                Icon(Icons.link_rounded, size: 18, color: c.accent),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text('刚复制的内容', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: c.accent)),
+                      const SizedBox(height: 2),
+                      Text(draft.url, style: TextStyle(fontSize: 11, color: c.sub), maxLines: 2, overflow: TextOverflow.ellipsis),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        if (draft.type == ClipType.link && draft.url.isNotEmpty) const SizedBox(height: 12),
+        _DraftPreview(draft: draft),
+        const SizedBox(height: 16),
+        Row(
+          children: [
+            Text('建议标签', style: TextStyle(fontSize: 12, color: c.sub)),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  for (final tag in draft.tags)
+                    GestureDetector(
+                      onTap: () => setState(() => draft.tags.remove(tag)),
+                      child: TagPill(label: '$tag  ×'),
+                    ),
+                  TagPill(label: '+ 添加标签', ghost: true, onTap: _addTag),
+                ],
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 24),
+        FilledButton(
+          onPressed: _busy ? null : _save,
+          child: _busy
+              ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
+              : const Text('存入剪藏库'),
+        ),
+        const SizedBox(height: 8),
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('取消，回列表'),
+        ),
+        const SizedBox(height: 4),
+        Text(
+          '存入后可离线查看；整理可以留到之后。',
+          textAlign: TextAlign.center,
+          style: TextStyle(fontSize: 11, color: c.weak),
+        ),
+      ],
+    );
+  }
+}
+
+class _DraftPreview extends StatelessWidget {
+  final PasteDraft draft;
+
+  const _DraftPreview({required this.draft});
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.colors;
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+
+    if (draft.type == ClipType.image) {
+      return ClipRRect(
+        borderRadius: BorderRadius.circular(AppRadii.card),
+        child: draft.imagePath != null
+            ? Image.file(File(draft.imagePath!), fit: BoxFit.cover, height: 220, width: double.infinity)
+            : Container(
+                height: 160,
+                color: c.card,
+                child: Icon(Icons.image_outlined, size: 36, color: c.accent),
+              ),
+      );
+    }
+
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: c.card,
+        borderRadius: BorderRadius.circular(AppRadii.card),
+        border: Border.all(color: c.line),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            width: 68,
+            height: 68,
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: isDark
+                    ? [const Color(0xFF24342B), const Color(0xFF33463A)]
+                    : [const Color(0xFFDDE7DF), const Color(0xFFB7C8BD)],
+              ),
+              borderRadius: BorderRadius.circular(AppRadii.thumb),
+            ),
+            child: Icon(
+              draft.type == ClipType.link ? Icons.link_rounded : Icons.notes_rounded,
+              size: 26,
+              color: c.accent,
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  draft.title,
+                  style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, height: 1.42, color: c.ink),
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  draft.summary,
+                  style: TextStyle(fontSize: 11, height: 1.55, color: c.sub),
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                ),
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    TypePill(type: draft.type, accent: true),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        draft.source,
+                        style: TextStyle(fontSize: 11, color: c.weak),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _StepBar extends StatelessWidget {
+  final int current;
+
+  const _StepBar({required this.current});
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.colors;
+    const labels = ['1 复制内容', '2 回到这里', '3 一键入库'];
+    return Row(
+      children: List.generate(labels.length, (index) {
+        final active = index == current;
+        return Expanded(
+          child: Padding(
+            padding: EdgeInsets.only(right: index == labels.length - 1 ? 0 : 6),
+            child: Container(
+              height: 30,
+              alignment: Alignment.center,
+              decoration: BoxDecoration(
+                color: active ? c.accent : c.soft,
+                borderRadius: BorderRadius.circular(15),
+              ),
+              child: Text(
+                labels[index],
+                style: TextStyle(
+                  fontSize: 10,
+                  fontWeight: active ? FontWeight.w600 : FontWeight.w500,
+                  color: active
+                      ? (Theme.of(context).brightness == Brightness.dark
+                          ? const Color(0xFF151917)
+                          : Colors.white)
+                      : c.sub,
+                ),
+              ),
+            ),
+          ),
+        );
+      }),
+    );
+  }
+}
