@@ -125,7 +125,10 @@ class ClipStore extends ChangeNotifier {
       _exportFormat = map['exportFormat'] as String? ?? 'md';
       _exportGroup = map['exportGroup'] as bool? ?? true;
       _exportImages = map['exportImages'] as bool? ?? true;
-      _demoSeeded = map['demoSeeded'] as bool? ?? false;
+      // 兼容旧版本：settings.json 存在但没有 demoSeeded 字段，说明是 1.1.1 之前的安装，
+      // 已经种过数据了。这里默认 true，避免升级后示例数据突然又冒回来。
+      // （全新安装时 settings.json 根本不存在，走不到这里，仍会正常种一次。）
+      _demoSeeded = map['demoSeeded'] as bool? ?? true;
     }
   }
 

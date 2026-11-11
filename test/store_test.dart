@@ -58,6 +58,18 @@ void main() {
     expect(store.clips, isEmpty, reason: '清空是用户的明确意图，重启后不该自动补数据');
   });
 
+  test('旧版本的设置文件（没有 demoSeeded 字段）升级后不会补示例数据', () async {
+    // 模拟 1.1.1 之前留下的 settings.json：有设置、无 demoSeeded
+    File('${tempDir.path}/settings.json').writeAsStringSync(
+      '{"themeMode":"dark","exportFormat":"md","exportGroup":true,"exportImages":true}',
+    );
+
+    final store = ClipStore.instance;
+    await store.init();
+
+    expect(store.clips, isEmpty, reason: '老用户升级上来不该被塞示例数据');
+  });
+
   test('清空后手动新增的内容，重启仍然在', () async {
     final store = ClipStore.instance;
     await store.init();

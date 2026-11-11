@@ -165,7 +165,7 @@ Flutter 模板默认给的是 `launchMode="singleTop"` + `taskAffinity=""`，这
 ## 9. 验证记录
 
 - `flutter analyze`：0 error / 0 warning
-- `flutter test`：**30/30 通过**（识别、检索、分组、导出、原文链接、zip 方案分支、CRC32 标准向量、ZIP 结构自洽、示例数据判定，另有 3 个存储层用例跑真实读写）
+- `flutter test`：**31/31 通过**（识别、检索、分组、导出、原文链接、zip 方案分支、CRC32 标准向量、ZIP 结构自洽、示例数据判定，另有 4 个存储层用例跑真实读写）
 - `dart run tool/zip_selftest.dart` 生成真实压缩包，再用 **Python `zipfile`** 独立校验：`testzip()` 无损坏条目、两条目 CRC 正确、`extractall()` 目录树为 `clips-2026-11-11.md` + `images/img_1.jpg` —— 确认「别的软件真的打得开」
 - `flutter build apk --release`：构建成功（47.9 MB）
 - `aapt2` 反查 APK Manifest：`launchMode=2`（singleTask）、`taskAffinity=com.stonemii.clippings`、分享入口六项齐全
@@ -204,4 +204,5 @@ Flutter 模板默认给的是 `launchMode="singleTop"` + `taskAffinity=""`，这
 
 1. **剪贴板自动读取**：选「从剪贴板新增」进页面就自动读一次，不用再点按钮。读不到就静默停在空状态（文案改为「没读到可识别的内容」，按钮改为「再读一次剪贴板」），不弹提示打扰。
 2. **修复清空数据后重启又被补回来**：原来 `init()` 只要发现「列表为空」就种示例数据，把「用户主动清空」误判成「首次安装」。现在 `settings.json` 里记 `demoSeeded`，只有「没有内容」**且**「从未种过」才种（判定抽成 `core.shouldSeedDemo`）。清空时会把 `demoSeeded` 置 true 并落盘，所以重启后是干净的空状态。
-3. 新增 `test/store_test.dart`：用临时目录 + mock 原生通道跑真实读写，覆盖「清空 → 重启不再补数据」「清空后新增的内容重启仍在」「首次启动会种数据并落标记」。
+   - **升级兼容**：`settings.json` 存在但没有 `demoSeeded` 字段时视为「已种过」（老版本安装），避免从旧版升级上来又被塞一次示例数据；全新安装时该文件不存在，仍会正常种一次。
+3. 新增 `test/store_test.dart`：用临时目录 + mock 原生通道跑真实读写，覆盖「清空 → 重启不再补数据」「旧版设置文件升级不补数据」「清空后新增的内容重启仍在」「首次启动会种数据并落标记」。
