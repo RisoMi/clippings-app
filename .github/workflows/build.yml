@@ -109,10 +109,17 @@ jobs:
 
       - name: 重命名为可读文件名
         id: apk
+        env:
+          VERSION_NAME: ${{ steps.version.outputs.name }}
         run: |
           set -euo pipefail
           SRC=build/app/outputs/flutter-apk/app-release.apk
-          NAME=clippings-app-${GITHUB_RUN_NUMBER}.apk
+          # 打 tag 时用版本号命名，同一 tag 重跑就能覆盖同一个附件
+          if [ -n "$VERSION_NAME" ]; then
+            NAME="clippings-app-${VERSION_NAME}.apk"
+          else
+            NAME="clippings-app-${GITHUB_RUN_NUMBER}.apk"
+          fi
           cp "$SRC" "$NAME"
           ls -lh "$SRC" "$NAME"
           echo "path=$NAME" >> "$GITHUB_OUTPUT"
@@ -153,7 +160,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: clippings-app-apk-${{ github.run_number }}
-          path: clippings-app-${{ github.run_number }}.apk
+          path: ${{ steps.apk.outputs.path }}
           if-no-files-found: error
           retention-days: 90
 
@@ -161,22 +168,29 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v')
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+          VERSION_NAME: ${{ steps.version.outputs.name }}
         run: |
           set -euo pipefail
-          ASSET="clippings-app-${GITHUB_RUN_NUMBER}.apk"
-          if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
-            # 同一个 tag 重跑时覆盖附件，避免 Release 上挂着旧包
-            echo "Release 已存在，覆盖上传附件"
-            gh release upload "${GITHUB_REF_NAME}" "$ASSET" --clobber
+          ASSET="clippings-app-${VERSION_NAME}.apk"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            # 同一 tag 重跑：先清掉历史遗留的其它 apk，保证 Release 上只挂一个包
+            while IFS= read -r old; do
+              if [ -z "$old" ]; then continue; fi
+              if [ "$old" = "$ASSET" ]; then continue; fi
+              gh release delete-asset "$TAG" "$old" --yes >/dev/null 2>&1 || true
+            done < <(gh release view "$TAG" --json assets -q '.assets[].name' | grep -E '\.apk$' || true)
+            echo "Release 已存在，覆盖上传 $ASSET"
+            gh release upload "$TAG" "$ASSET" --clobber
           else
-            gh release create "${GITHUB_REF_NAME}" \
+            gh release create "$TAG" \
               "$ASSET#剪藏库 APK（Release）" \
-              --title "剪藏库 ${GITHUB_REF_NAME}" \
+              --title "剪藏库 $TAG" \
               --notes "自动构建于 ${GITHUB_SHA:0:7}。
 
           - 安装包：$ASSET（Release，已用 debug 密钥签名，可直接安装）
           - 要求：Android 6.0 及以上
           - 装好后在任意 APP 的分享面板里选择「剪藏库」即可保存内容
-          - 同一版本重跑构建会覆盖此附件，版本号以 tag 为准" \
+          - 版本名跟随 tag；同一 tag 重跑会覆盖此附件" \
               --generate-notes
           fi

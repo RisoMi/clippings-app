@@ -16,7 +16,9 @@
 
 **拿包两步**：
 1. 打开 [Actions · Build APK](https://github.com/RisoMi/clippings-app/actions/workflows/build.yml) → 点进最新一次运行（绿色勾）
-2. 页面底部 **Artifacts** → 下载 `clippings-app-apk-<运行号>` → 解压得到 `clippings-app-<运行号>.apk` → 传到手机安装
+2. 页面底部 **Artifacts** → 下载 `clippings-app-apk-<运行号>` → 解压出 `.apk` → 传到手机安装
+
+打 tag 时附件名会跟随版本号（如 `clippings-app-1.1.0.apk`），日常推送则是 `clippings-app-<运行号>.apk`。
 
 也可以直接调 API（公开仓库无需登录）：
 
@@ -26,10 +28,10 @@ curl -sL -o apk.zip "https://api.github.com/repos/RisoMi/clippings-app/actions/a
 
 **手动重跑**：Actions → 左栏 *Build APK* → 右上 `Run workflow`。
 
-**发版（自动建 Release）**：打 tag 推送即可，Release 里会附带 APK。
+**发版（自动建 Release）**：打 tag 推送即可，Release 里会附带 APK；同一 tag 重跑会覆盖同一个附件，不会堆一堆旧包。
 
 ```bash
-git tag v1.0.0 && git push origin v1.0.0
+git tag v1.1.0 && git push origin v1.1.0
 ```
 
 **流水线做了什么**
