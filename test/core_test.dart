@@ -369,4 +369,19 @@ void main() {
       expect(offSwitch.mime, 'text/plain');
     });
   });
+
+  group('示例数据判定', () {
+    test('首次安装：一条都没有且没种过 → 种', () {
+      expect(shouldSeedDemo(hasClips: false, demoSeeded: false), isTrue);
+    });
+
+    test('用户清空后重启：没有内容但已经种过 → 不种（本次修复的 bug）', () {
+      expect(shouldSeedDemo(hasClips: false, demoSeeded: true), isFalse);
+    });
+
+    test('已经有内容 → 永远不种', () {
+      expect(shouldSeedDemo(hasClips: true, demoSeeded: false), isFalse);
+      expect(shouldSeedDemo(hasClips: true, demoSeeded: true), isFalse);
+    });
+  });
 }

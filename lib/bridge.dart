@@ -2,6 +2,7 @@
 /// 只用一个 MethodChannel，没有引入任何第三方插件。
 library;
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
 class SharePayload {
@@ -32,6 +33,10 @@ class Bridge {
   static const MethodChannel _channel = MethodChannel('com.stonemii.clippings/bridge');
 
   static String? _cachedDir;
+
+  /// 测试用：清掉目录缓存，让每次测试都重新向原生要路径
+  @visibleForTesting
+  static void resetCacheForTest() => _cachedDir = null;
 
   /// 应用私有目录（Android 为 filesDir）；失败时退回当前目录
   static Future<String> filesDir() async {

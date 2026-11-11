@@ -8,6 +8,7 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 
 import 'bridge.dart';
+import 'core.dart';
 import 'models.dart';
 
 class AppStats {
@@ -58,6 +59,22 @@ class ClipStore extends ChangeNotifier {
   /// clips.json 最近一次已知的修改时间，用于判断磁盘上是否有别的写入
   DateTime? _clipsMtime;
 
+  /// 测试用：把单例恢复到「刚创建」的状态，用来模拟杀掉进程再打开
+  @visibleForTesting
+  void resetForTest() {
+    _clips.clear();
+    _tags.clear();
+    _dir = '';
+    _ready = false;
+    _memoryOnly = false;
+    _demoSeeded = false;
+    _clipsMtime = null;
+    _themeMode = 'system';
+    _exportFormat = 'md';
+    _exportGroup = true;
+    _exportImages = true;
+  }
+
   Future<void> init() async {
     if (_ready) return;
     _dir = await Bridge.filesDir();
@@ -65,7 +82,9 @@ class ClipStore extends ChangeNotifier {
       await Directory('$_dir/images').create(recursive: true);
       await Directory('$_dir/exports').create(recursive: true);
       await _load();
-      if (_clips.isEmpty) {
+      // 注意：只判「列表为空」会在「用户主动清空后重启」时把示例数据种回来，
+      // 所以必须同时满足「没种过」。
+      if (shouldSeedDemo(hasClips: _clips.isNotEmpty, demoSeeded: _demoSeeded)) {
         await seedDemo(silent: true);
       }
     } catch (error, stack) {
@@ -106,6 +125,7 @@ class ClipStore extends ChangeNotifier {
       _exportFormat = map['exportFormat'] as String? ?? 'md';
       _exportGroup = map['exportGroup'] as bool? ?? true;
       _exportImages = map['exportImages'] as bool? ?? true;
+      _demoSeeded = map['demoSeeded'] as bool? ?? false;
     }
   }
 
@@ -154,6 +174,9 @@ class ClipStore extends ChangeNotifier {
   bool _exportGroup = true;
   bool _exportImages = true;
 
+  /// 是否已经种过示例数据。用来区分「首次安装」和「用户主动清空」。
+  bool _demoSeeded = false;
+
   String get themeMode => _themeMode;
 
   String get exportFormat => _exportFormat;
@@ -186,6 +209,7 @@ class ClipStore extends ChangeNotifier {
         'exportFormat': _exportFormat,
         'exportGroup': _exportGroup,
         'exportImages': _exportImages,
+        'demoSeeded': _demoSeeded,
       }),
     );
   }
@@ -338,6 +362,9 @@ class ClipStore extends ChangeNotifier {
         }
       } catch (_) {}
     }
+    // 记住「已经种过」：清空是用户的明确意图，重启后不该把示例数据补回来
+    _demoSeeded = true;
+    await _persistSettings();
     notifyListeners();
   }
 
@@ -411,7 +438,9 @@ class ClipStore extends ChangeNotifier {
     }
     _clips.sort((a, b) => b.createdAt.compareTo(a.createdAt));
     await ensureTags(demo.expand((clip) => clip.tags));
+    _demoSeeded = true;
     await _persistClips();
+    await _persistSettings();
     if (!silent) notifyListeners();
   }
 

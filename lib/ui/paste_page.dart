@@ -104,6 +104,11 @@ class _PastePageState extends State<PastePage> {
   void initState() {
     super.initState();
     _draft = widget.initial;
+    // 选了「从剪贴板新增」就直接读，不再让用户多点一次按钮。
+    // 放在首帧之后：这时页面已经铺好，读不到也能安静停在空状态。
+    if (_draft == null && widget.mode == PasteMode.clipboard) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => _readClipboard(silent: true));
+    }
   }
 
   @override
@@ -112,18 +117,19 @@ class _PastePageState extends State<PastePage> {
     super.dispose();
   }
 
-  Future<void> _readClipboard() async {
-    setState(() => _busy = true);
+  /// [silent] 为 true 表示进页面时自动读：读不到就安静停在空状态，不弹提示打扰。
+  Future<void> _readClipboard({bool silent = false}) async {
+    if (mounted) setState(() => _busy = true);
     try {
       final data = await Clipboard.getData(Clipboard.kTextPlain);
       final text = data?.text ?? '';
       if (text.trim().isEmpty) {
-        if (mounted) showToast(context, '剪贴板里没有可识别的内容');
+        if (!silent && mounted) showToast(context, '剪贴板里没有可识别的内容');
         return;
       }
       final detected = detectContent(text: text);
       if (detected == null) {
-        if (mounted) showToast(context, '没识别出内容');
+        if (!silent && mounted) showToast(context, '没识别出内容');
         return;
       }
       if (!mounted) return;
@@ -139,7 +145,7 @@ class _PastePageState extends State<PastePage> {
         );
       });
     } catch (_) {
-      if (mounted) showToast(context, '读取剪贴板被拒绝，请手动粘贴');
+      if (!silent && mounted) showToast(context, '读取剪贴板被拒绝，请手动粘贴');
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -296,12 +302,12 @@ class _PastePageState extends State<PastePage> {
     return ListView(
       padding: const EdgeInsets.fromLTRB(20, 6, 20, 40),
       children: [
-        Text('自动检测已开启', style: TextStyle(fontSize: 12, color: c.accent, fontWeight: FontWeight.w500)),
+        Text('已自动读取剪贴板', style: TextStyle(fontSize: 12, color: c.accent, fontWeight: FontWeight.w500)),
         const SizedBox(height: 4),
-        Text('剪贴板里有什么', style: Theme.of(context).textTheme.headlineLarge),
+        Text('没读到可识别的内容', style: Theme.of(context).textTheme.headlineLarge),
         const SizedBox(height: 6),
         Text(
-          '复制链接或文字后点下面的按钮读取；也可以直接把内容粘贴到输入框。',
+          '进页面时已经自动读过一次。可能是复制的不是文本，或系统没放权限；直接把内容粘到下面也一样能存。',
           style: TextStyle(fontSize: 12, height: 1.7, color: c.sub),
         ),
         const SizedBox(height: 16),
@@ -312,14 +318,14 @@ class _PastePageState extends State<PastePage> {
           icon: _busy
               ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
               : const Icon(Icons.content_paste_rounded, size: 18),
-          label: const Text('读取剪贴板'),
+          label: const Text('再读一次剪贴板'),
         ),
         const SizedBox(height: 12),
         Container(
           padding: const EdgeInsets.all(12),
           decoration: BoxDecoration(color: c.soft, borderRadius: BorderRadius.circular(AppRadii.row)),
           child: Text(
-            '浏览器与系统出于隐私限制，读取剪贴板需要你点一下授权。内容只在本机识别，不上传。',
+            '内容只在本机识别，不上传。系统可能会提示「已粘贴」，这是读取剪贴板的正常提示。',
             style: TextStyle(fontSize: 11, height: 1.7, color: c.sub),
           ),
         ),

@@ -387,3 +387,9 @@ ExportPlan planExport(
     asZip: false,
   );
 }
+
+/// 启动时是否要写入示例数据：只有「一条内容都没有」且「从来没种过」才种。
+/// 这条规则单独抽出来，是因为「清空全部数据后重启又冒出来」的 bug 出在这里：
+/// 光判断「列表为空」会把「用户主动清空」误当成「首次安装」。
+bool shouldSeedDemo({required bool hasClips, required bool demoSeeded}) =>
+    !hasClips && !demoSeeded;
