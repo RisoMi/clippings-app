@@ -12,7 +12,11 @@ import java.io.File
  * 原生桥：
  * 1) 接收系统分享（ACTION_SEND / SEND_MULTIPLE），把文本或图片交给 Dart；
  * 2) 提供应用私有目录路径；
- * 3) 把导出的 Markdown / TXT 通过 FileProvider 分享出去。
+ * 3) 把导出的 Markdown / TXT / ZIP 通过 FileProvider 分享出去。
+ *
+ * 关键设计：分享内容是「暂存 + 通知」，由 Dart 主动来取。
+ * 不在 onNewIntent 里直接塞 payload，是因为 Dart 侧 handler 未注册时
+ * invokeMethod 会静默丢弃，那次分享就永久丢了。
  */
 class MainActivity : FlutterActivity() {
 
@@ -49,27 +53,23 @@ class MainActivity : FlutterActivity() {
             }
         }
 
-        // 冷启动：把启动它的分享 Intent 暂存起来
+        // 冷启动：把启动它的分享 Intent 暂存起来，等 Dart 起来后自己来取
         collectShare(intent)
     }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        collectShare(intent)
-        // 热启动：直接把新分享推给 Dart 层
-        val payload = pendingShare
-        if (payload != null) {
-            channel?.invokeMethod("onShare", payload)
-            pendingShare = null
-        }
+        if (!collectShare(intent)) return
+        // 热启动：只发信号，内容留在 pendingShare 里等 Dart 调 takePendingShare
+        channel?.invokeMethod("onShare", null)
     }
 
-    @Suppress("DEPRECATION")
-    private fun collectShare(intent: Intent?) {
-        if (intent == null) return
-        val action = intent.action ?: return
-        if (action != Intent.ACTION_SEND && action != Intent.ACTION_SEND_MULTIPLE) return
+    /** 解析分享 Intent 存入 pendingShare；不是分享 Intent 时返回 false */
+    private fun collectShare(intent: Intent?): Boolean {
+        if (intent == null) return false
+        val action = intent.action ?: return false
+        if (action != Intent.ACTION_SEND && action != Intent.ACTION_SEND_MULTIPLE) return false
 
         val type = intent.type ?: "text/plain"
         val title = intent.getStringExtra(Intent.EXTRA_SUBJECT) ?: ""
@@ -77,21 +77,23 @@ class MainActivity : FlutterActivity() {
 
         if (type.startsWith("image/")) {
             val uri: Uri? = if (action == Intent.ACTION_SEND_MULTIPLE) {
+                @Suppress("DEPRECATION")
                 intent.getParcelableArrayListExtra<Uri>(Intent.EXTRA_STREAM)?.firstOrNull()
             } else {
+                @Suppress("DEPRECATION")
                 intent.getParcelableExtra(Intent.EXTRA_STREAM) as? Uri
             }
             val localPath = uri?.let { copyToPrivateDir(it) }
             if (localPath == null) {
-                // 拿不到图片就退化成文本分享
-                if (text.isEmpty()) return
+                // 图片拿不到就退化成文本分享
+                if (text.isEmpty() && title.isEmpty()) return false
                 pendingShare = mapOf(
                     "type" to "text",
                     "title" to title,
                     "text" to text,
                     "url" to ""
                 )
-                return
+                return true
             }
             pendingShare = mapOf(
                 "type" to "image",
@@ -100,15 +102,17 @@ class MainActivity : FlutterActivity() {
                 "url" to "",
                 "imagePath" to localPath
             )
-        } else {
-            if (text.isEmpty()) return
-            pendingShare = mapOf(
-                "type" to "text",
-                "title" to title,
-                "text" to text,
-                "url" to ""
-            )
+            return true
         }
+
+        if (text.isEmpty() && title.isEmpty()) return false
+        pendingShare = mapOf(
+            "type" to "text",
+            "title" to title,
+            "text" to text,
+            "url" to ""
+        )
+        return true
     }
 
     /** 把分享进来的图片复制到私有目录，避免原 Uri 授权过期 */

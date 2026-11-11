@@ -3,11 +3,19 @@
         android:label="剪藏库"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
+        <!--
+          launchMode 必须是 singleTask：
+          Task 模式下从不同 APP 分享过来时，系统会带 FLAG_ACTIVITY_NEW_TASK 启动。
+          若用 singleTop（Flutter 模板默认），每次会新开一个任务栈 → 多个 Activity 实例
+          → 多个 Dart 引擎，各自持有一份内存快照，表现就是「分享了几条只看到一部分，
+          全部杀掉再打开又正常」。singleTask 全程只有一个实例，新 Intent 走 onNewIntent。
+          taskAffinity 不能留空：空 affinity 在 NEW_TASK 下会被视为不同任务，同样会分裂实例。
+        -->
         <activity
             android:name=".MainActivity"
             android:exported="true"
-            android:launchMode="singleTop"
-            android:taskAffinity=""
+            android:launchMode="singleTask"
+            android:taskAffinity="com.stonemii.clippings"
             android:theme="@style/LaunchTheme"
             android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
             android:hardwareAccelerated="true"

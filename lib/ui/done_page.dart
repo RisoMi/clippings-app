@@ -14,6 +14,7 @@ class DonePage extends StatelessWidget {
   final int count;
   final String format;
   final bool shared;
+  final int imageCount;
 
   const DonePage({
     super.key,
@@ -23,11 +24,26 @@ class DonePage extends StatelessWidget {
     required this.count,
     required this.format,
     required this.shared,
+    this.imageCount = 0,
   });
 
   String get _sizeLabel => byteSize > 1024 * 1024
       ? '${(byteSize / 1024 / 1024).toStringAsFixed(1)} MB'
       : '${(byteSize / 1024).ceil()} KB';
+
+  String get _formatLabel => switch (format) {
+        'md' => 'Markdown',
+        'txt' => '纯文本',
+        'zip' => 'ZIP 压缩包',
+        _ => format,
+      };
+
+  String get _mime => switch (format) {
+        'md' => 'text/markdown',
+        'txt' => 'text/plain',
+        'zip' => 'application/zip',
+        _ => 'application/octet-stream',
+      };
 
   @override
   Widget build(BuildContext context) {
@@ -96,7 +112,7 @@ class DonePage extends StatelessWidget {
                       ),
                       const SizedBox(height: 3),
                       Text(
-                        '${format == 'md' ? 'Markdown' : '纯文本'} · $_sizeLabel · $count 条内容',
+                        '$_formatLabel · $_sizeLabel · $count 条内容${imageCount > 0 ? ' · $imageCount 张图片' : ''}',
                         style: TextStyle(fontSize: 11, color: c.weak),
                       ),
                     ],
@@ -110,7 +126,7 @@ class DonePage extends StatelessWidget {
             onPressed: () async {
               final ok = await Bridge.shareFile(
                 filePath,
-                format == 'md' ? 'text/markdown' : 'text/plain',
+                _mime,
                 title: fileName,
               );
               if (context.mounted) {

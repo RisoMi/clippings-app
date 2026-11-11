@@ -99,14 +99,14 @@ env -u HTTP_PROXY -u HTTPS_PROXY -u http_proxy -u https_proxy flutter test
 
 | 屏 | 文件 | 已实现 |
 |---|---|---|
-| 01 内容列表 | `ui/home_page.dart` | 今天/昨天/更早分组、类型快筛、三态卡片、空状态、悬浮「＋」 |
+| 01 内容列表 | `ui/home_page.dart` | 今天/昨天/更早分组、类型快筛、三态卡片、空状态、**左滑删除（带 5 秒撤销）**、悬浮「＋」 |
 | 02 分享速存 | `ui/paste_page.dart` | 分享 → 自动识别 → 确认页 → 入库（Android 真机可用） |
 | 03 搜索 | `ui/search_page.dart` | 四字段检索、关键词高亮、类型筛选、未分类入口 |
 | 04 标签 | `ui/tags_page.dart` | 数量聚合、色点、新建/重命名/删除、点标签看内容 |
 | 05 详情 | `ui/detail_page.dart` | 正文、图片、标签增删、复制全文、删除 |
-| 06 批量导出 | `ui/export_page.dart` | 多选/全选、md/txt、图片复制、时间分组、前 14 行预览 |
-| 07 导出完成 | `ui/done_page.dart` | 文件名/大小/条数、再次分享 |
-| 08 粘贴速存 | `ui/paste_page.dart` | 读剪贴板、三步条、自动识别、建议标签、手动粘贴兜底 |
+| 06 批量导出 | `ui/export_page.dart` | 多选/全选、md/txt、**原文链接单列**、**含图片自动打包 zip**、时间分组、前 14 行预览 |
+| 07 导出完成 | `ui/done_page.dart` | 文件名/大小/条数（含图片数）、再次分享 |
+| 08 粘贴速存 | `ui/paste_page.dart` | **加号先弹「剪贴板新增 / 手动输入」两选项**、读剪贴板、三步条、自动识别、建议标签、手动兜底 |
 | 设置 | `ui/settings_page.dart` | 主题、统计、分享说明、示例数据、清空 |
 
 ## 5. Android 分享接入
@@ -119,7 +119,18 @@ env -u HTTP_PROXY -u HTTPS_PROXY -u http_proxy -u https_proxy flutter test
 
 `MainActivity` 收到后暂存：文本走 `EXTRA_TEXT` / `EXTRA_SUBJECT`；图片用 `ContentResolver` 复制到 `filesDir/share_incoming/`（原 Uri 读权限会过期），再通过 `MethodChannel` 交给 Dart。
 
-冷启动：Dart 调 `takePendingShare()`；热启动：原生 `onNewIntent` 主动 `invokeMethod('onShare')`。
+冷启动：Dart 启动后调 `takePendingShare()` 领取；热启动：原生 `onNewIntent` **只发一个 `onShare` 信号、不带内容**，Dart 收到信号再回调用 `takePendingShare()` 拉取。这样做是因为 Dart 侧 handler 尚未注册时 `invokeMethod` 会静默丢弃，分享就永久丢了；「暂存 + 通知」两边都安全。Dart 回到前台时也会补拉一次。
+
+### launchMode 必须是 singleTask（重要）
+
+Flutter 模板默认给的是 `launchMode="singleTop"` + `taskAffinity=""`，这对**分享接收类应用是有害的**：
+
+- 从其他 APP 分享过来时，系统会带 `FLAG_ACTIVITY_NEW_TASK` 启动；
+- 空的 `taskAffinity` 让每次都被当作新任务，`singleTop` 又只在同一任务栈内去重；
+- 结果是从不同 APP 分享会开出**多个 Activity 实例 → 多个 Dart 引擎**，各自持有启动时读到的内存快照；
+- 表现就是「明明存了 4 条只显示 2 条，全部杀掉重开又正常」——文件里其实是全的，只是某个实例在看过期快照。
+
+现在改为 `launchMode="singleTask"` + `taskAffinity="com.stonemii.clippings"`：全程只有一个实例，新分享走 `onNewIntent`。另外 `ClipStore` 增加了 `reloadIfChanged()`，回前台时按 `clips.json` 的修改时间决定是否重载，作为兜底。
 
 > 源 APP 若使用自绘分享面板（微信、抖音等），本应用不会出现在其分享列表——Android 生态限制，用「复制 → 粘贴速存」兜底。
 
@@ -142,7 +153,7 @@ env -u HTTP_PROXY -u HTTPS_PROXY -u http_proxy -u https_proxy flutter test
 - **iOS 分享入口未实现**（需 macOS，见上）。
 - Flutter 内置 `Clipboard` 只支持文本，图片剪贴板待补（目前图片走系统分享）。
 - 搜索历史仅本次会话内存，未持久化。
-- 导出图片为「复制到 `exports/images/` + Markdown 相对路径引用」，需连同文件夹拷走；未做 zip。
+- 不做网页元数据抓取，链接的标题与封面取决于源 APP 给了什么（原因见第 11 节）。
 - CI 出的 APK 用 **debug 密钥签名**（Flutter 默认），可直接安装自用；上架应用商店需自行配置正式签名与 `applicationId`。
 
 ## 8. 与 PWA 版本的关系
@@ -152,6 +163,37 @@ env -u HTTP_PROXY -u HTTPS_PROXY -u http_proxy -u https_proxy flutter test
 ## 9. 验证记录
 
 - `flutter analyze`：0 error / 0 warning
-- `flutter test`：17/17 通过（识别、检索、分组、Markdown/TXT 导出、图片相对路径、标签推荐）
-- `flutter build apk --debug`：构建成功
-- **GitHub Actions run #1**：`静态分析 + 单元测试` ✅、`构建 Release APK` ✅、`校验 APK 内的分享入口` ✅，产物 `clippings-app-apk-1`（22.3 MB，zip）— 2026-11-11
+- `flutter test`：**24/24 通过**（识别、检索、分组、导出、原文链接、zip 方案分支、CRC32 标准向量、ZIP 结构自洽、标签推荐）
+- `dart run tool/zip_selftest.dart` 生成真实压缩包，再用 **Python `zipfile`** 独立校验：`testzip()` 无损坏条目、两条目 CRC 正确、`extractall()` 目录树为 `clips-2026-11-11.md` + `images/img_1.jpg` —— 确认「别的软件真的打得开」
+- `flutter build apk --release`：构建成功（47.9 MB）
+- `aapt2` 反查 APK Manifest：`launchMode=2`（singleTask）、`taskAffinity=com.stonemii.clippings`、分享入口六项齐全
+- **GitHub Actions**：run #1~#3 全绿，产物与 Release 见开头
+
+## 10. 导出格式
+
+| 情况 | 产物 | 说明 |
+|---|---|---|
+| 无图片，或关掉「包含图片」 | `clips-YYYY-MM-DD.md` / `.txt` | 单文件，直接分享 |
+| 含图片且开关打开 | `clips-YYYY-MM-DD.zip` | 内含正文 + `images/` 目录，正文用相对路径 `![](images/xxx.jpg)` 引用 |
+
+- **原文链接**：Markdown 与纯文本都单独输出一行 `原文：<url>`，Markdown 里标题本身也是可点链接。加这一行是因为不少编辑器不渲染标题里的链接语法，纯文本更是完全没有链接。
+- **zip 是自己写的**：`lib/zip.dart` 只做 store（不压缩）+ CRC32，约 130 行，没有引入 `archive` 这类三方包。
+- zip 内正文文件名固定、图片按 `images/<原名>` 存放，解压即用。
+
+## 11. 为什么分享 x.com 只有链接，分享到微信却有标题和图片
+
+不是本应用的 bug，是两件事的差别：
+
+1. **分享 Intent 只带源 APP 愿意给的东西。** Android `ACTION_SEND` 里没有「标题」「封面」这类字段，只有 `EXTRA_TEXT` / `EXTRA_SUBJECT` / `EXTRA_STREAM`。X（Twitter）分享通常只塞一个裸 URL，所以到我们手里就只有链接。
+2. **预览卡片是「接收方自己抓的」。** 微信显示标题和缩略图，是微信客户端收到链接后**自己去请求网页**，读 `<head>` 里的 Open Graph 标签（`og:title` / `og:image` / `og:description`）再画成卡片。谁抓谁有卡片，不抓就只有一条 URL。
+
+要让本应用也显示标题与封面，需要**自己加网页元数据抓取**（请求页面 → 解析 og 标签 → 下载封面存本地）。这块尚未实现，因为它是一个独立模块：要联网权限、要处理超时/反爬/图片体积限制。**X 尤其难**——它的页面依赖 JS 渲染且拦截非浏览器请求，直接抓 og 标签多数拿不到，通常得走官方 oEmbed / API。
+
+## 12. 本轮变更（2026-11-11 第二轮）
+
+1. 导出补原文链接（md 与 txt 都有独立行）
+2. 含图片的导出改为 zip 打包，图片放包内并相对引用
+3. 列表支持左滑删除，5 秒内可撤销（撤销窗口内先保留图片文件，超时才清理）
+4. 加号改为先弹「从剪贴板新增 / 手动输入」两个选项
+5. 修复多实例导致的数据不同步（singleTask + 暂存通知 + 回前台重载）
+6. 单元测试从 17 个补到 24 个

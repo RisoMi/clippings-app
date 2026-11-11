@@ -28,15 +28,17 @@ class ClippingsApp extends StatefulWidget {
   State<ClippingsApp> createState() => _ClippingsAppState();
 }
 
-class _ClippingsAppState extends State<ClippingsApp> {
+class _ClippingsAppState extends State<ClippingsApp> with WidgetsBindingObserver {
   static const MethodChannel _channel = MethodChannel('com.stonemii.clippings/bridge');
 
   bool _ready = false;
+  bool _draining = false;
   ThemeMode _mode = ThemeMode.system;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _boot();
   }
 
@@ -46,19 +48,36 @@ class _ClippingsAppState extends State<ClippingsApp> {
     ClipStore.instance.addListener(_syncTheme);
 
     _channel.setMethodCallHandler((call) async {
-      // 原生在热启动时收到新分享会回调这里
-      if (call.method == 'onShare' && call.arguments is Map) {
-        openSharePayload(SharePayload.fromMap(call.arguments as Map));
-      }
+      // 原生在热启动收到新分享时只发信号，内容留在 pendingShare 里由这里主动拉
+      if (call.method == 'onShare') await _drainShare();
       return null;
     });
 
     if (mounted) setState(() => _ready = true);
 
-    final pending = await Bridge.takePendingShare();
-    if (pending != null) {
-      // 等首帧完成再跳转，避免 Navigator 尚未挂载
-      WidgetsBinding.instance.addPostFrameCallback((_) => openSharePayload(pending));
+    // 等首帧完成再跳转，避免 Navigator 尚未挂载
+    WidgetsBinding.instance.addPostFrameCallback((_) => _drainShare());
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state != AppLifecycleState.resumed) return;
+    // 回到前台：对齐磁盘 + 补拉可能漏掉的分享
+    ClipStore.instance.reloadIfChanged();
+    _drainShare();
+  }
+
+  /// 取走原生暂存的分享内容并打开确认页。
+  /// 冷启动、热启动、回前台三条路径都汇到这里，保证不漏也不重复。
+  Future<void> _drainShare() async {
+    if (_draining || !mounted) return;
+    _draining = true;
+    try {
+      await ClipStore.instance.reloadIfChanged();
+      final payload = await Bridge.takePendingShare();
+      if (payload != null) openSharePayload(payload);
+    } finally {
+      _draining = false;
     }
   }
 
@@ -75,6 +94,7 @@ class _ClippingsAppState extends State<ClippingsApp> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     ClipStore.instance.removeListener(_syncTheme);
     super.dispose();
   }
@@ -141,6 +161,70 @@ class _RootShellState extends State<RootShell> {
     (Icons.settings_outlined, '设置'),
   ];
 
+  /// 加号：先选「剪贴板新增 / 手动输入」，再进对应的录入页
+  Future<void> _showAddSheet() async {
+    final mode = await showModalBottomSheet<PasteMode>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      isScrollControlled: true,
+      builder: (sheetContext) {
+        final sc = sheetContext.colors;
+        return SafeArea(
+          top: false,
+          child: Container(
+            margin: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+            padding: const EdgeInsets.fromLTRB(16, 10, 16, 10),
+            decoration: BoxDecoration(
+              color: sc.card,
+              borderRadius: BorderRadius.circular(22),
+              border: Border.all(color: sc.line),
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Center(
+                  child: Container(
+                    width: 40,
+                    height: 4,
+                    decoration: BoxDecoration(color: sc.line, borderRadius: BorderRadius.circular(2)),
+                  ),
+                ),
+                const SizedBox(height: 14),
+                Text(
+                  '新增收藏',
+                  style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700, color: sc.ink),
+                ),
+                const SizedBox(height: 12),
+                _AddOption(
+                  icon: Icons.content_paste_rounded,
+                  title: '从剪贴板新增',
+                  subtitle: '自动读取并识别链接或文字',
+                  onTap: () => Navigator.of(sheetContext).pop(PasteMode.clipboard),
+                ),
+                const SizedBox(height: 10),
+                _AddOption(
+                  icon: Icons.edit_note_rounded,
+                  title: '手动输入',
+                  subtitle: '自己粘贴链接，或写一段想法',
+                  onTap: () => Navigator.of(sheetContext).pop(PasteMode.manual),
+                ),
+                const SizedBox(height: 4),
+                TextButton(
+                  onPressed: () => Navigator.of(sheetContext).pop(),
+                  child: const Text('取消'),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+
+    if (mode == null || !mounted) return;
+    Navigator.of(context).push(MaterialPageRoute(builder: (_) => PastePage(mode: mode)));
+  }
+
   @override
   Widget build(BuildContext context) {
     final c = context.colors;
@@ -154,9 +238,7 @@ class _RootShellState extends State<RootShell> {
           ? Padding(
               padding: const EdgeInsets.only(bottom: 8),
               child: FloatingActionButton(
-                onPressed: () => Navigator.of(context).push(
-                  MaterialPageRoute(builder: (_) => const PastePage()),
-                ),
+                onPressed: _showAddSheet,
                 backgroundColor: c.accent,
                 foregroundColor: activeFg,
                 elevation: 4,
@@ -216,6 +298,59 @@ class _RootShellState extends State<RootShell> {
               );
             }),
           ),
+        ),
+      ),
+    );
+  }
+}
+
+/// 底部选择面板里的一行选项
+class _AddOption extends StatelessWidget {
+  final IconData icon;
+  final String title;
+  final String subtitle;
+  final VoidCallback onTap;
+
+  const _AddOption({
+    required this.icon,
+    required this.title,
+    required this.subtitle,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.colors;
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(AppRadii.row),
+      child: Container(
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
+          color: c.soft,
+          borderRadius: BorderRadius.circular(AppRadii.row),
+        ),
+        child: Row(
+          children: [
+            Container(
+              width: 38,
+              height: 38,
+              decoration: BoxDecoration(color: c.accentSoft, borderRadius: BorderRadius.circular(12)),
+              child: Icon(icon, size: 19, color: c.accent),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(title, style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: c.ink)),
+                  const SizedBox(height: 2),
+                  Text(subtitle, style: TextStyle(fontSize: 11, color: c.sub)),
+                ],
+              ),
+            ),
+            Icon(Icons.chevron_right_rounded, size: 18, color: c.weak),
+          ],
         ),
       ),
     );

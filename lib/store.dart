@@ -55,6 +55,9 @@ class ClipStore extends ChangeNotifier {
 
   String get tagsFile => '$_dir/tags.json';
 
+  /// clips.json 最近一次已知的修改时间，用于判断磁盘上是否有别的写入
+  DateTime? _clipsMtime;
+
   Future<void> init() async {
     if (_ready) return;
     _dir = await Bridge.filesDir();
@@ -83,6 +86,7 @@ class ClipStore extends ChangeNotifier {
         ..clear()
         ..addAll(list.map((e) => Clip.fromJson(e as Map<String, dynamic>)));
       _clips.sort((a, b) => b.createdAt.compareTo(a.createdAt));
+      _clipsMtime = await clipsFile.lastModified();
     }
 
     final tagsFile = File(this.tagsFile);
@@ -105,9 +109,29 @@ class ClipStore extends ChangeNotifier {
     }
   }
 
+  /// 磁盘上的数据被别人改过就重新加载。
+  /// 正常情况下 singleTask 只会有这一个实例；这是兜底，防止
+  /// 极端情况（进程被回收后重启、用户手动清数据）读到过期快照。
+  Future<void> reloadIfChanged() async {
+    if (_memoryOnly || !_ready) return;
+    try {
+      final file = File(clipsFile);
+      if (!await file.exists()) return;
+      final mtime = await file.lastModified();
+      if (_clipsMtime != null && !mtime.isAfter(_clipsMtime!)) return;
+      await _load();
+      notifyListeners();
+    } catch (_) {
+      // 读不到就保持现状，不打断界面
+    }
+  }
+
   Future<void> _persistClips() async {
     if (_memoryOnly) return;
     await _atomicWrite(clipsFile, jsonEncode(_clips.map((e) => e.toJson()).toList()));
+    try {
+      _clipsMtime = await File(clipsFile).lastModified();
+    } catch (_) {}
   }
 
   Future<void> _persistTags() async {
@@ -188,20 +212,28 @@ class ClipStore extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> deleteClip(String id) async {
+  /// 删除一条收藏。
+  /// [keepImage] 为 true 时先留着图片，给「撤销」留余地；
+  /// 撤销窗口结束后再调 [purgeImage] 清理，避免撤销回来图没了。
+  Future<void> deleteClip(String id, {bool keepImage = false}) async {
     final index = _clips.indexWhere((item) => item.id == id);
     if (index < 0) return;
     final removed = _clips.removeAt(index);
-    if (removed.imageFileName != null) {
-      try {
-        final file = imageFile(removed.imageFileName!);
-        if (await file.exists()) await file.delete();
-      } catch (_) {
-        // 图片删不掉不影响主流程
-      }
+    if (!keepImage && removed.imageFileName != null) {
+      await purgeImage(removed.imageFileName!);
     }
     await _persistClips();
     notifyListeners();
+  }
+
+  /// 清理不再被引用的图片文件
+  Future<void> purgeImage(String fileName) async {
+    try {
+      final file = imageFile(fileName);
+      if (await file.exists()) await file.delete();
+    } catch (_) {
+      // 图片删不掉不影响主流程
+    }
   }
 
   /* ------------------------------ tags ------------------------------ */

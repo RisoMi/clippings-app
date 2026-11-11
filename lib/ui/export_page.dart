@@ -1,6 +1,7 @@
-/// 06 批量导出：多选、Markdown / 纯文本、图片与分组开关、文件预览。
+/// 06 批量导出：多选、Markdown / 纯文本、图片打包、文件预览。
 library;
 
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -11,6 +12,7 @@ import '../models.dart';
 import '../store.dart';
 import '../theme.dart';
 import '../widgets.dart';
+import '../zip.dart';
 import 'done_page.dart';
 
 class ExportPage extends StatefulWidget {
@@ -34,15 +36,34 @@ class _ExportPageState extends State<ExportPage> {
   List<Clip> get _selectedClips =>
       ClipStore.instance.clips.where((clip) => _selected.contains(clip.id)).toList();
 
-  String _preview() {
-    final clips = _selectedClips;
-    if (clips.isEmpty) return '还没有勾选内容。';
+  /// 当前选中的内容里，真实存在于磁盘的图片（文件名 → 文件）
+  Future<Map<String, File>> _collectImages(List<Clip> clips) async {
     final store = ClipStore.instance;
-    final content = store.exportFormat == 'md'
-        ? exportMarkdown(clips, groupByTime: store.exportGroup, includeImages: false)
-        : exportText(clips, groupByTime: store.exportGroup);
-    final lines = content.split('\n');
-    return lines.take(14).join('\n') + (lines.length > 14 ? '\n…' : '');
+    final result = <String, File>{};
+    for (final clip in clips) {
+      final name = clip.imageFileName;
+      if (name == null || result.containsKey(name)) continue;
+      final file = store.imageFile(name);
+      if (await file.exists()) result[name] = file;
+    }
+    return result;
+  }
+
+  ExportPlan _plan() {
+    final store = ClipStore.instance;
+    return planExport(
+      _selectedClips,
+      format: store.exportFormat,
+      groupByTime: store.exportGroup,
+      includeImages: store.exportImages,
+    );
+  }
+
+  String _preview() {
+    if (_selectedClips.isEmpty) return '还没有勾选内容。';
+    final lines = _plan().content.split('\n');
+    final head = lines.take(14).join('\n');
+    return lines.length > 14 ? '$head\n…' : head;
   }
 
   Future<void> _export() async {
@@ -51,50 +72,55 @@ class _ExportPageState extends State<ExportPage> {
     setState(() => _busy = true);
     final store = ClipStore.instance;
     try {
-      final format = store.exportFormat;
-      final content = format == 'md'
-          ? exportMarkdown(clips, groupByTime: store.exportGroup, includeImages: store.exportImages)
-          : exportText(clips, groupByTime: store.exportGroup);
-
       final dir = Directory('${store.dataDir}/exports');
       await dir.create(recursive: true);
 
-      if (format == 'md' && store.exportImages) {
-        final imagesDir = Directory('${dir.path}/images');
-        await imagesDir.create(recursive: true);
-        for (final clip in clips) {
-          final name = clip.imageFileName;
-          if (name == null) continue;
-          final source = store.imageFile(name);
-          if (!await source.exists()) continue;
-          final target = File('${imagesDir.path}/$name');
-          if (!await target.exists()) {
-            await source.copy(target.path);
-          }
+      final images = store.exportImages ? await _collectImages(clips) : <String, File>{};
+      final now = DateTime.now();
+      // hasImages 用「真实存在的图片」判断，避免勾了开关但图已丢失时产出空包
+      final plan = planExport(
+        clips,
+        format: store.exportFormat,
+        groupByTime: store.exportGroup,
+        includeImages: store.exportImages,
+        hasImages: images.isNotEmpty,
+        now: now,
+      );
+
+      final file = File('${dir.path}/${plan.fileName}');
+      if (plan.asZip) {
+        // 正文与 images/ 同在一个压缩包里；正文里的 `![](images/xxx.jpg)`
+        // 是相对路径，解压后直接能显示。
+        final entries = <ZipEntry>[
+          ZipEntry(plan.textFileName, utf8.encode(plan.content), modified: now),
+        ];
+        for (final entry in images.entries) {
+          final bytes = await entry.value.readAsBytes();
+          var modified = now;
+          try {
+            modified = await entry.value.lastModified();
+          } catch (_) {}
+          entries.add(ZipEntry('images/${entry.key}', bytes, modified: modified));
         }
+        await file.writeAsBytes(buildZipArchive(entries), flush: true);
+      } else {
+        await file.writeAsString(plan.content, flush: true);
       }
 
-      final fileName = buildExportFileName(format);
-      final file = File('${dir.path}/$fileName');
-      await file.writeAsString(content, flush: true);
       final size = await file.length();
-
-      final shared = await Bridge.shareFile(
-        file.path,
-        format == 'md' ? 'text/markdown' : 'text/plain',
-        title: fileName,
-      );
+      final shared = await Bridge.shareFile(file.path, plan.mime, title: plan.fileName);
 
       if (!mounted) return;
       Navigator.of(context).push(
         MaterialPageRoute(
           builder: (_) => DonePage(
-            fileName: fileName,
+            fileName: plan.fileName,
             filePath: file.path,
             byteSize: size,
             count: clips.length,
-            format: format,
+            format: plan.asZip ? 'zip' : store.exportFormat,
             shared: shared,
+            imageCount: images.length,
           ),
         ),
       );
@@ -189,7 +215,7 @@ class _ExportPageState extends State<ExportPage> {
                     Expanded(
                       child: _FormatCard(
                         title: 'Markdown .md',
-                        subtitle: '含标题、标签、来源链接',
+                        subtitle: '含标题、标签、原文链接',
                         active: store.exportFormat == 'md',
                         onTap: () => store.setExportOptions(format: 'md'),
                       ),
@@ -207,7 +233,7 @@ class _ExportPageState extends State<ExportPage> {
                 ),
                 const SizedBox(height: 14),
                 _SwitchRow(
-                  label: '包含图片（复制到 images 文件夹）',
+                  label: '包含图片（自动打包成 zip）',
                   value: store.exportImages,
                   onChanged: (v) => store.setExportOptions(images: v),
                 ),
@@ -238,7 +264,7 @@ class _ExportPageState extends State<ExportPage> {
                 ),
                 const SizedBox(height: 8),
                 Text(
-                  '生成的 .md / .txt 可直接用任意编辑器打开，也能发到电脑。',
+                  '无图片导出 .md / .txt；勾选内容含图片时导出 .zip，解压后正文可直接看到配图。',
                   textAlign: TextAlign.center,
                   style: TextStyle(fontSize: 11, color: c.weak),
                 ),

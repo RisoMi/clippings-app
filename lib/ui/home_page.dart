@@ -1,5 +1,7 @@
-/// 01 内容列表：时间分组、类型快筛、三态卡片、空状态、悬浮「＋」由根容器提供。
+/// 01 内容列表：时间分组、类型快筛、三态卡片、左滑删除、悬浮「＋」由根容器提供。
 library;
+
+import 'dart:async';
 
 import 'package:flutter/material.dart';
 
@@ -23,6 +25,21 @@ class _HomePageState extends State<HomePage> {
   ClipType? _filter;
   String _tagFilter = '';
 
+  /// 刚删除、还在撤销窗口内的条目（图片先留着，撤销窗口过了再清理）
+  Clip? _pendingPurge;
+  Timer? _purgeTimer;
+
+  /// 已划走但还没从 store 通知回来的 id。
+  /// Dismissible 要求「划走」与「数据移除」同一帧完成，否则会抛
+  /// "A dismissed Dismissible widget is still part of the tree"。
+  final Set<String> _removing = {};
+
+  @override
+  void dispose() {
+    _purgeTimer?.cancel();
+    super.dispose();
+  }
+
   void _cycleTheme() {
     final store = ClipStore.instance;
     final next = switch (store.themeMode) {
@@ -39,6 +56,53 @@ class _HomePageState extends State<HomePage> {
     showToast(context, label);
   }
 
+  Future<void> _deleteClip(Clip clip) async {
+    final store = ClipStore.instance;
+
+    // 先同步从列表里拿掉，让 Dismissible 这一帧就看不到自己
+    setState(() => _removing.add(clip.id));
+
+    // 上一笔还没撤销完就又被删了：先把它的图片清掉，避免留下孤儿文件
+    final previous = _pendingPurge;
+    if (previous?.imageFileName != null) {
+      store.purgeImage(previous!.imageFileName!);
+    }
+    _purgeTimer?.cancel();
+
+    await store.deleteClip(clip.id, keepImage: true);
+    if (!mounted) return;
+
+    _pendingPurge = clip;
+    _purgeTimer = Timer(const Duration(seconds: 5), () {
+      final pending = _pendingPurge;
+      _pendingPurge = null;
+      if (pending?.imageFileName != null) store.purgeImage(pending!.imageFileName!);
+    });
+
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(
+        SnackBar(
+          content: Text(
+            '已删除「${clip.title}」',
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
+          duration: const Duration(seconds: 5),
+          action: SnackBarAction(
+            label: '撤销',
+            onPressed: () {
+              _purgeTimer?.cancel();
+              _purgeTimer = null;
+              _pendingPurge = null;
+              if (mounted) setState(() => _removing.remove(clip.id));
+              store.addClip(clip);
+            },
+          ),
+        ),
+      );
+  }
+
   @override
   Widget build(BuildContext context) {
     final c = context.colors;
@@ -49,6 +113,7 @@ class _HomePageState extends State<HomePage> {
         builder: (context, _) {
           final store = ClipStore.instance;
           final filtered = store.clips.where((clip) {
+            if (_removing.contains(clip.id)) return false;
             if (_filter != null && clip.type != _filter) return false;
             if (_tagFilter.isNotEmpty && !clip.tags.contains(_tagFilter)) return false;
             return true;
@@ -129,10 +194,16 @@ class _HomePageState extends State<HomePage> {
                     for (final clip in group.items)
                       Padding(
                         padding: const EdgeInsets.only(bottom: 10),
-                        child: ClipCard(
-                          clip: clip,
-                          onTap: () => Navigator.of(context).push(
-                            MaterialPageRoute(builder: (_) => DetailPage(clipId: clip.id)),
+                        child: Dismissible(
+                          key: ValueKey('clip-${clip.id}'),
+                          direction: DismissDirection.endToStart,
+                          background: _DeleteBackground(color: c.danger),
+                          onDismissed: (_) => _deleteClip(clip),
+                          child: ClipCard(
+                            clip: clip,
+                            onTap: () => Navigator.of(context).push(
+                              MaterialPageRoute(builder: (_) => DetailPage(clipId: clip.id)),
+                            ),
                           ),
                         ),
                       ),
@@ -141,6 +212,34 @@ class _HomePageState extends State<HomePage> {
             ),
           );
         },
+      ),
+    );
+  }
+}
+
+/// 左滑时露出的删除底
+class _DeleteBackground extends StatelessWidget {
+  final Color color;
+
+  const _DeleteBackground({required this.color});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      alignment: Alignment.centerRight,
+      padding: const EdgeInsets.only(right: 20),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(AppRadii.card),
+        border: Border.all(color: color.withValues(alpha: 0.30)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(Icons.delete_outline_rounded, size: 20, color: color),
+          const SizedBox(width: 6),
+          Text('删除', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: color)),
+        ],
       ),
     );
   }

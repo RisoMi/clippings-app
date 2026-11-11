@@ -1,5 +1,9 @@
+import 'dart:convert';
+import 'dart:typed_data';
+
 import 'package:clippings/core.dart';
 import 'package:clippings/models.dart';
+import 'package:clippings/zip.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
@@ -248,6 +252,121 @@ void main() {
         const [],
       );
       expect(tags, ['摘录']);
+    });
+  });
+
+  group('导出链接与压缩包', () {
+    final linkClip = Clip(
+      id: 'a',
+      type: ClipType.link,
+      title: '标题',
+      summary: '摘要',
+      source: '少数派',
+      url: 'https://sspai.com/post/84217',
+      domain: 'sspai.com',
+      tags: const [],
+      createdAt: DateTime(2026, 11, 11, 10),
+    );
+
+    test('Markdown 与纯文本都单列原文链接', () {
+      final md = exportMarkdown([linkClip], groupByTime: false, now: DateTime(2026, 11, 11));
+      expect(md, contains('- 原文：https://sspai.com/post/84217'));
+      final txt = exportText([linkClip], groupByTime: false, now: DateTime(2026, 11, 11));
+      expect(txt, contains('  原文：https://sspai.com/post/84217'));
+    });
+
+    test('纯文本可带图片相对路径', () {
+      final imgClip = Clip(
+        id: 'i',
+        type: ClipType.image,
+        title: '照片',
+        summary: '',
+        source: '',
+        url: '',
+        domain: '',
+        tags: const [],
+        createdAt: DateTime(2026, 11, 11),
+        imageFileName: 'img_1.jpg',
+      );
+      expect(exportText([imgClip], groupByTime: false), isNot(contains('图片：')));
+      expect(
+        exportText([imgClip], groupByTime: false, includeImages: true),
+        contains('  图片：images/img_1.jpg'),
+      );
+    });
+
+    test('压缩包与基础文件名', () {
+      final ts = DateTime(2026, 11, 11);
+      expect(buildExportBaseName(now: ts), 'clips-2026-11-11');
+      expect(buildExportZipFileName(now: ts), 'clips-2026-11-11.zip');
+    });
+
+    test('crc32 命中标准校验向量', () {
+      // 通用校验向量："123456789" → 0xCBF43926
+      expect(crc32(utf8.encode('123456789')), 0xCBF43926);
+      expect(crc32(const []), 0);
+    });
+
+    test('ZIP 结构：本地头 / 中央目录 / EOCD 数量与偏移自洽', () {
+      final bytes = buildZipArchive([
+        ZipEntry('a.md', utf8.encode('# hi'), modified: DateTime(2026, 11, 11, 10)),
+        ZipEntry(
+          'images/b.jpg',
+          Uint8List.fromList(List.filled(10, 7)),
+          modified: DateTime(2026, 11, 11, 10),
+        ),
+      ]);
+
+      expect(bytes.sublist(0, 4), [0x50, 0x4b, 0x03, 0x04]); // PK\x03\x04
+      final data = ByteData.sublistView(bytes);
+      final eocd = bytes.length - 22;
+      expect(data.getUint32(eocd, Endian.little), 0x06054b50);
+      expect(data.getUint16(eocd + 8, Endian.little), 2); // 本盘条目数
+      expect(data.getUint16(eocd + 10, Endian.little), 2); // 总条目数
+
+      final cdSize = data.getUint32(eocd + 12, Endian.little);
+      final cdOffset = data.getUint32(eocd + 16, Endian.little);
+      expect(cdOffset + cdSize, eocd); // 中央目录之后紧接 EOCD
+      expect(data.getUint32(cdOffset, Endian.little), 0x02014b50);
+    });
+
+    test('有图片且开关打开 → 走压缩包', () {
+      final plan = planExport(
+        [linkClip],
+        format: 'md',
+        includeImages: true,
+        hasImages: true,
+        now: DateTime(2026, 11, 11),
+      );
+      expect(plan.asZip, isTrue);
+      expect(plan.fileName, 'clips-2026-11-11.zip');
+      expect(plan.textFileName, 'clips-2026-11-11.md');
+      expect(plan.mime, 'application/zip');
+      expect(plan.content, contains('- 原文：https://sspai.com/post/84217'));
+    });
+
+    test('没有图片或关掉开关 → 单个文本文件', () {
+      final noImage = planExport(
+        [linkClip],
+        format: 'md',
+        includeImages: true,
+        hasImages: false,
+        now: DateTime(2026, 11, 11),
+      );
+      expect(noImage.asZip, isFalse);
+      expect(noImage.fileName, 'clips-2026-11-11.md');
+      expect(noImage.mime, 'text/markdown');
+
+      final offSwitch = planExport(
+        [linkClip],
+        format: 'txt',
+        includeImages: false,
+        hasImages: true,
+        now: DateTime(2026, 11, 11),
+      );
+      expect(offSwitch.asZip, isFalse);
+      expect(offSwitch.fileName, 'clips-2026-11-11.txt');
+      expect(offSwitch.mime, 'text/plain');
     });
   });
 }

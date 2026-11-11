@@ -80,10 +80,14 @@ PasteDraft? buildDraftFromShare(SharePayload payload) {
   );
 }
 
+/// 录入方式：剪贴板（默认，自动读取）或手动输入
+enum PasteMode { clipboard, manual }
+
 class PastePage extends StatefulWidget {
   final PasteDraft? initial;
+  final PasteMode mode;
 
-  const PastePage({super.key, this.initial});
+  const PastePage({super.key, this.initial, this.mode = PasteMode.clipboard});
 
   @override
   State<PastePage> createState() => _PastePageState();
@@ -93,6 +97,8 @@ class _PastePageState extends State<PastePage> {
   final TextEditingController _manual = TextEditingController();
   PasteDraft? _draft;
   bool _busy = false;
+
+  bool get _isManual => widget.mode == PasteMode.manual;
 
   @override
   void initState() {
@@ -226,6 +232,7 @@ class _PastePageState extends State<PastePage> {
   Widget build(BuildContext context) {
     final c = context.colors;
     final draft = _draft;
+    final title = draft != null ? '确认保存' : (_isManual ? '手动新增' : '粘贴速存');
     return Scaffold(
       backgroundColor: c.bg,
       appBar: AppBar(
@@ -233,14 +240,14 @@ class _PastePageState extends State<PastePage> {
           icon: Icon(draft == null ? Icons.arrow_back_ios_new_rounded : Icons.close_rounded, size: 18),
           onPressed: () => Navigator.of(context).pop(),
         ),
-        title: Text(draft == null ? '粘贴速存' : '确认保存'),
+        title: Text(title),
         actions: [
-          if (draft == null)
+          if (draft == null && !_isManual)
             IconButton(
               icon: const Icon(Icons.content_paste_rounded, size: 19),
               onPressed: _busy ? null : _readClipboard,
             )
-          else
+          else if (draft != null)
             IconButton(
               icon: const Icon(Icons.restart_alt_rounded, size: 19),
               onPressed: () => setState(() => _draft = null),
@@ -253,6 +260,39 @@ class _PastePageState extends State<PastePage> {
 
   Widget _buildEmpty(BuildContext context) {
     final c = context.colors;
+
+    // 手动输入：不给「读取剪贴板」按钮，直接把输入框顶到前面
+    if (_isManual) {
+      return ListView(
+        padding: const EdgeInsets.fromLTRB(20, 6, 20, 40),
+        children: [
+          Text('手动新增', style: TextStyle(fontSize: 12, color: c.accent, fontWeight: FontWeight.w500)),
+          const SizedBox(height: 4),
+          Text('写点什么存下来', style: Theme.of(context).textTheme.headlineLarge),
+          const SizedBox(height: 6),
+          Text(
+            '带链接的内容会自动存成「链接」，其余按「文本」保存，标题取首句。',
+            style: TextStyle(fontSize: 12, height: 1.7, color: c.sub),
+          ),
+          const SizedBox(height: 20),
+          TextField(
+            controller: _manual,
+            maxLines: 8,
+            minLines: 5,
+            autofocus: true,
+            decoration: const InputDecoration(hintText: '粘贴链接、一段文字，或直接写下想法…'),
+          ),
+          const SizedBox(height: 12),
+          FilledButton(onPressed: _detectManual, child: const Text('识别并预览')),
+          const SizedBox(height: 10),
+          OutlinedButton(
+            onPressed: _busy ? null : _readClipboard,
+            child: const Text('改用剪贴板里的内容'),
+          ),
+        ],
+      );
+    }
+
     return ListView(
       padding: const EdgeInsets.fromLTRB(20, 6, 20, 40),
       children: [

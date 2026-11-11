@@ -242,11 +242,16 @@ String exportMarkdown(
         ..writeln();
     }
     for (final clip in group.items) {
-      final isLink = clip.type == ClipType.link && clip.url.isNotEmpty;
-      buffer.writeln(isLink ? '### [${clip.title}](${clip.url})' : '### ${clip.title}');
+      final url = clip.url.trim();
+      final isLink = clip.type == ClipType.link && url.isNotEmpty;
+      buffer.writeln(isLink ? '### [${clip.title}]($url)' : '### ${clip.title}');
       buffer.writeln(
         '- 来源：${clip.source.isEmpty ? '剪藏库' : clip.source} · ${formatDateTime(clip.createdAt)}${_tagSuffix(clip)}',
       );
+      // 原文链接单独成行：标题上的链接在部分编辑器里点不动，这一行保证一定能访问
+      if (url.isNotEmpty) {
+        buffer.writeln('- 原文：$url');
+      }
       if (clip.summary.trim().isNotEmpty) {
         buffer
           ..writeln()
@@ -264,12 +269,13 @@ String exportMarkdown(
     }
   }
 
-  return buffer.toString().trimRight() + '\n';
+  return '${buffer.toString().trimRight()}\n';
 }
 
 String exportText(
   List<Clip> clips, {
   bool groupByTime = true,
+  bool includeImages = false,
   DateTime? now,
 }) {
   final ts = now ?? DateTime.now();
@@ -294,11 +300,18 @@ String exportText(
         ..writeln();
     }
     for (final clip in group.items) {
+      final url = clip.url.trim();
       buffer
         ..writeln('· ${clip.title}')
         ..writeln('  来源：${clip.source.isEmpty ? '剪藏库' : clip.source} · ${formatDateTime(clip.createdAt)}');
       if (clip.tags.isNotEmpty) {
         buffer.writeln('  标签：${clip.tags.join(' / ')}');
+      }
+      if (url.isNotEmpty) {
+        buffer.writeln('  原文：$url');
+      }
+      if (includeImages && clip.imageFileName != null) {
+        buffer.writeln('  图片：images/${clip.imageFileName}');
       }
       if (clip.summary.trim().isNotEmpty) {
         buffer
@@ -309,10 +322,68 @@ String exportText(
     }
   }
 
-  return buffer.toString().trimRight() + '\n';
+  return '${buffer.toString().trimRight()}\n';
 }
 
-String buildExportFileName(String format, {DateTime? now}) {
-  final ts = now ?? DateTime.now();
-  return 'clips-${formatDate(ts)}.${format == 'md' ? 'md' : 'txt'}';
+String buildExportBaseName({DateTime? now}) => 'clips-${formatDate(now ?? DateTime.now())}';
+
+String buildExportFileName(String format, {DateTime? now}) =>
+    '${buildExportBaseName(now: now)}.${format == 'md' ? 'md' : 'txt'}';
+
+String buildExportZipFileName({DateTime? now}) => '${buildExportBaseName(now: now)}.zip';
+
+/// 导出方案：决定产出单个文本文件，还是把正文 + 图片打成压缩包。
+/// 抽成纯函数是为了让「什么时候走 zip、用什么 MIME」能在单测里覆盖，
+/// 而不是埋在界面代码里靠人工点。
+class ExportPlan {
+  /// 最终交付的文件名
+  final String fileName;
+
+  /// 压缩包内正文的文件名；不走压缩包时与 fileName 相同
+  final String textFileName;
+
+  final String mime;
+  final String content;
+  final bool asZip;
+
+  const ExportPlan({
+    required this.fileName,
+    required this.textFileName,
+    required this.mime,
+    required this.content,
+    required this.asZip,
+  });
+}
+
+ExportPlan planExport(
+  List<Clip> clips, {
+  required String format,
+  bool groupByTime = true,
+  bool includeImages = true,
+  bool hasImages = false,
+  DateTime? now,
+}) {
+  final content = format == 'md'
+      ? exportMarkdown(clips, groupByTime: groupByTime, includeImages: includeImages, now: now)
+      : exportText(clips, groupByTime: groupByTime, includeImages: includeImages, now: now);
+  final textFileName = buildExportFileName(format, now: now);
+
+  // 勾了「包含图片」且确实有图片文件，才值得打成包
+  if (includeImages && hasImages) {
+    return ExportPlan(
+      fileName: buildExportZipFileName(now: now),
+      textFileName: textFileName,
+      mime: 'application/zip',
+      content: content,
+      asZip: true,
+    );
+  }
+
+  return ExportPlan(
+    fileName: textFileName,
+    textFileName: textFileName,
+    mime: format == 'md' ? 'text/markdown' : 'text/plain',
+    content: content,
+    asZip: false,
+  );
 }
