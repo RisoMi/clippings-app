@@ -9,6 +9,43 @@
 
 ---
 
+## 快速获取安装包（CI 出包）
+
+仓库：<https://github.com/RisoMi/clippings-app.git>
+每次推送到 `main`，GitHub Actions 会先跑静态分析与单元测试，通过后再构建 **Release APK** 并上传为产物。
+
+**拿包两步**：
+1. 打开 [Actions · Build APK](https://github.com/RisoMi/clippings-app/actions/workflows/build.yml) → 点进最新一次运行（绿色勾）
+2. 页面底部 **Artifacts** → 下载 `clippings-app-apk-<运行号>` → 解压得到 `clippings-app-<运行号>.apk` → 传到手机安装
+
+也可以直接调 API（公开仓库无需登录）：
+
+```bash
+curl -sL -o apk.zip "https://api.github.com/repos/RisoMi/clippings-app/actions/artifacts/<artifact_id>/zip"
+```
+
+**手动重跑**：Actions → 左栏 *Build APK* → 右上 `Run workflow`。
+
+**发版（自动建 Release）**：打 tag 推送即可，Release 里会附带 APK。
+
+```bash
+git tag v1.0.0 && git push origin v1.0.0
+```
+
+**流水线做了什么**
+
+| Job | 内容 |
+|---|---|
+| 静态分析 + 单元测试 | `flutter analyze` + `flutter test`（17 用例），不通过不进入构建 |
+| 构建 Release APK | JDK 17 + Flutter 3.47.2 + Gradle 缓存 → `flutter build apk --release`（versionCode 用流水号，保证可覆盖升级） |
+| 分享入口断言 | 用 `aapt2` 反解 APK 内 Manifest，逐个校验 `ACTION_SEND`、`SEND_MULTIPLE`、`text/plain`、`text/html`、`image/*`、FileProvider、`MainActivity`；缺任一项直接判失败 |
+
+> 最后这个断言是刻意加的：光编译通过不代表「分享到剪藏库」真的能出现，只有成品 Manifest 里注册齐了才算数。
+
+iOS 侧另有手动工作流 `.github/workflows/ios-verify.yml`（macOS runner，未签名模拟器构建）。它只验证编译，**不产出可安装的 ipa**——打 ipa 需要 Apple 开发者账号与证书。
+
+---
+
 ## 1. 技术栈
 
 | 项目 | 选择 | 说明 |
@@ -106,7 +143,7 @@ env -u HTTP_PROXY -u HTTPS_PROXY -u http_proxy -u https_proxy flutter test
 - Flutter 内置 `Clipboard` 只支持文本，图片剪贴板待补（目前图片走系统分享）。
 - 搜索历史仅本次会话内存，未持久化。
 - 导出图片为「复制到 `exports/images/` + Markdown 相对路径引用」，需连同文件夹拷走；未做 zip。
-- 仅提供 `debug` 包；上架需自行配置签名与 `applicationId`。
+- CI 出的 APK 用 **debug 密钥签名**（Flutter 默认），可直接安装自用；上架应用商店需自行配置正式签名与 `applicationId`。
 
 ## 8. 与 PWA 版本的关系
 
@@ -117,3 +154,4 @@ env -u HTTP_PROXY -u HTTPS_PROXY -u http_proxy -u https_proxy flutter test
 - `flutter analyze`：0 error / 0 warning
 - `flutter test`：17/17 通过（识别、检索、分组、Markdown/TXT 导出、图片相对路径、标签推荐）
 - `flutter build apk --debug`：构建成功
+- **GitHub Actions run #1**：`静态分析 + 单元测试` ✅、`构建 Release APK` ✅、`校验 APK 内的分享入口` ✅，产物 `clippings-app-apk-1`（22.3 MB，zip）— 2026-11-11
