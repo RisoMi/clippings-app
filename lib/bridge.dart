@@ -80,4 +80,34 @@ class Bridge {
       return false;
     }
   }
+
+  /// 选备份文件的结果：把「取消」「文件太大」「出错」分开，界面才能说清楚
+  static const String pickOk = 'ok';
+  static const String pickCancelled = 'cancelled';
+  static const String pickTooLarge = 'tooLarge';
+  static const String pickFailed = 'failed';
+
+  /// 打开系统文件选择器挑一个备份包，返回已复制到私有目录的本地路径。
+  static Future<BackupPickResult> pickBackupFile() async {
+    try {
+      final raw = await _channel.invokeMethod<String>('pickBackupFile');
+      if (raw == null) return const BackupPickResult(pickCancelled);
+      if (raw == 'too_large') return const BackupPickResult(pickTooLarge);
+      if (raw.isEmpty) return const BackupPickResult(pickFailed);
+      return BackupPickResult(pickOk, raw);
+    } on PlatformException {
+      return const BackupPickResult(pickFailed);
+    } on MissingPluginException {
+      return const BackupPickResult(pickFailed);
+    }
+  }
+}
+
+class BackupPickResult {
+  final String status;
+  final String? path;
+
+  const BackupPickResult(this.status, [this.path]);
+
+  bool get ok => status == Bridge.pickOk && path != null;
 }

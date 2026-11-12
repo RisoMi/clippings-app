@@ -96,4 +96,91 @@ void main() {
     expect(store.clips.length, 1);
     expect(store.clips.first.title, '手写的一条');
   });
+
+  test('导出的备份能原样恢复（含图片）', () async {
+    final store = ClipStore.instance;
+    await store.init();
+    await store.clearAll();
+
+    // 造一条带图片的收藏
+    final imageFile = File('${tempDir.path}/images/pic.jpg');
+    await imageFile.parent.create(recursive: true);
+    final imageBytes = List<int>.generate(256, (i) => (i * 3) % 256);
+    await imageFile.writeAsBytes(imageBytes);
+    await store.addClip(
+      Clip(
+        id: 'backup-1',
+        type: ClipType.image,
+        title: '要备份的图片',
+        summary: '摘要',
+        source: '测试',
+        url: '',
+        domain: '',
+        tags: const ['摄影'],
+        createdAt: DateTime(2026, 11, 12, 10),
+        imageFileName: 'pic.jpg',
+      ),
+    );
+
+    final backup = await store.createBackup();
+    expect(await backup.exists(), isTrue);
+
+    // 模拟卸载重装：数据清空、图片也没了
+    await store.clearAll();
+    expect(store.clips, isEmpty);
+    expect(await imageFile.exists(), isFalse);
+
+    // 从备份恢复
+    final content = await store.readBackupFile(backup.path);
+    expect(content.clipCount, 1);
+    expect(content.imageCount, 1);
+
+    final total = await store.applyBackup(content, replace: true);
+    expect(total, 1);
+    expect(store.clips.single.title, '要备份的图片');
+    expect(store.clips.single.imageFileName, 'pic.jpg');
+    expect(await imageFile.exists(), isTrue, reason: '图片要一起恢复');
+    expect(await imageFile.readAsBytes(), imageBytes);
+  });
+
+  test('合并导入不会丢掉本地已有的内容', () async {
+    final store = ClipStore.instance;
+    await store.init();
+    await store.clearAll();
+
+    await store.addClip(
+      Clip(
+        id: 'local-1',
+        type: ClipType.text,
+        title: '本地新内容',
+        summary: '',
+        source: '',
+        url: '',
+        domain: '',
+        tags: const [],
+        createdAt: DateTime(2026, 11, 12, 9),
+      ),
+    );
+    final backup = await store.createBackup();
+
+    await store.addClip(
+      Clip(
+        id: 'local-2',
+        type: ClipType.text,
+        title: '备份之后加的',
+        summary: '',
+        source: '',
+        url: '',
+        domain: '',
+        tags: const [],
+        createdAt: DateTime(2026, 11, 12, 11),
+      ),
+    );
+
+    final content = await store.readBackupFile(backup.path);
+    final total = await store.applyBackup(content, replace: false);
+
+    expect(total, 2);
+    expect(store.clips.map((c) => c.id), containsAll(['local-1', 'local-2']));
+  });
 }

@@ -7,9 +7,11 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 
+import 'backup.dart';
 import 'bridge.dart';
 import 'core.dart';
 import 'models.dart';
+import 'zip.dart';
 
 class AppStats {
   final int total;
@@ -465,5 +467,93 @@ class ClipStore extends ChangeNotifier {
     } catch (_) {
       return null;
     }
+  }
+
+  /* ------------------------------ 备份与恢复 ------------------------------ */
+
+  /// 打一个备份包（收藏 + 标签 + 图片），写到 backups/ 下并返回文件
+  Future<File> createBackup() async {
+    final now = DateTime.now();
+    final images = <String, List<int>>{};
+    for (final clip in _clips) {
+      final name = clip.imageFileName;
+      if (name == null || images.containsKey(name)) continue;
+      final file = imageFile(name);
+      if (!await file.exists()) continue;
+      images[name] = await file.readAsBytes();
+    }
+
+    final entries = buildBackupEntries(clips: _clips, tags: _tags, images: images, now: now);
+    final dir = Directory('$_dir/backups');
+    await dir.create(recursive: true);
+    final file = File('${dir.path}/${buildBackupFileName(now)}');
+    await file.writeAsBytes(buildZipArchive(entries), flush: true);
+    return file;
+  }
+
+  /// 读取并解析一个备份文件
+  Future<BackupContent> readBackupFile(String path) async {
+    final file = File(path);
+    if (!await file.exists()) throw const BackupException('备份文件不存在');
+    final length = await file.length();
+    if (length > 200 * 1024 * 1024) {
+      throw const BackupException('备份文件超过 200 MB，暂不支持导入');
+    }
+    final bytes = await file.readAsBytes();
+    try {
+      return parseBackup(unzipArchive(bytes));
+    } on ZipFormatException catch (error) {
+      throw BackupException('备份包无法解开：${error.message}');
+    }
+  }
+
+  /// 应用备份。[replace] 为 true 时清空本地再写入，否则按 id 合并。
+  /// 返回导入后的总条数。
+  Future<int> applyBackup(BackupContent content, {required bool replace}) async {
+    if (replace) {
+      _clips.clear();
+      _tags.clear();
+      try {
+        final dir = Directory('$_dir/images');
+        if (await dir.exists()) {
+          for (final entity in dir.listSync()) {
+            if (entity is File) {
+              try {
+                await entity.delete();
+              } catch (_) {}
+            }
+          }
+        }
+      } catch (_) {}
+    }
+
+    await Directory('$_dir/images').create(recursive: true);
+    for (final entry in content.images.entries) {
+      // 文件名来自外部包，落地前再挡一次路径跳转
+      if (entry.key.isEmpty || entry.key.contains('/') || entry.key.contains('..')) continue;
+      try {
+        final target = File('$_dir/images/${entry.key}');
+        await target.writeAsBytes(entry.value, flush: true);
+      } catch (_) {}
+    }
+
+    final nextClips = replace ? [...content.clips] : mergeClips(_clips, content.clips);
+    final nextTags = replace ? [...content.tags] : mergeTags(_tags, content.tags);
+    nextClips.sort((a, b) => b.createdAt.compareTo(a.createdAt));
+
+    _clips
+      ..clear()
+      ..addAll(nextClips);
+    _tags
+      ..clear()
+      ..addAll(nextTags);
+
+    // 导入过真实数据，之后不该再自动种示例数据
+    _demoSeeded = true;
+    await _persistClips();
+    await _persistTags();
+    await _persistSettings();
+    notifyListeners();
+    return _clips.length;
   }
 }

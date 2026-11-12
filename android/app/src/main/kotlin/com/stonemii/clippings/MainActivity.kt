@@ -1,5 +1,6 @@
 package com.stonemii.clippings
 
+import android.app.Activity
 import android.content.Intent
 import android.net.Uri
 import androidx.core.content.FileProvider
@@ -12,7 +13,8 @@ import java.io.File
  * 原生桥：
  * 1) 接收系统分享（ACTION_SEND / SEND_MULTIPLE），把文本或图片交给 Dart；
  * 2) 提供应用私有目录路径；
- * 3) 把导出的 Markdown / TXT / ZIP 通过 FileProvider 分享出去。
+ * 3) 把导出的 Markdown / TXT / ZIP 通过 FileProvider 分享出去；
+ * 4) 打开系统文件选择器挑备份包并复制到私有目录（导入用）。
  *
  * 关键设计：分享内容是「暂存 + 通知」，由 Dart 主动来取。
  * 不在 onNewIntent 里直接塞 payload，是因为 Dart 侧 handler 未注册时
@@ -23,6 +25,7 @@ class MainActivity : FlutterActivity() {
     private val channelName = "com.stonemii.clippings/bridge"
     private var channel: MethodChannel? = null
     private var pendingShare: Map<String, Any?>? = null
+    private var pendingPick: MethodChannel.Result? = null
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -49,6 +52,8 @@ class MainActivity : FlutterActivity() {
                     }
                 }
 
+                "pickBackupFile" -> pickBackupFile(result)
+
                 else -> result.notImplemented()
             }
         }
@@ -64,6 +69,8 @@ class MainActivity : FlutterActivity() {
         // 热启动：只发信号，内容留在 pendingShare 里等 Dart 调 takePendingShare
         channel?.invokeMethod("onShare", null)
     }
+
+    /* ------------------------------ 分享接收 ------------------------------ */
 
     /** 解析分享 Intent 存入 pendingShare；不是分享 Intent 时返回 false */
     private fun collectShare(intent: Intent?): Boolean {
@@ -117,9 +124,74 @@ class MainActivity : FlutterActivity() {
 
     /** 把分享进来的图片复制到私有目录，避免原 Uri 授权过期 */
     private fun copyToPrivateDir(uri: Uri): String? {
+        return copyUriTo(uri, "share_incoming", "shared_${System.currentTimeMillis()}.jpg")
+    }
+
+    /* ------------------------------ 导入备份 ------------------------------ */
+
+    private fun pickBackupFile(result: MethodChannel.Result) {
+        if (pendingPick != null) {
+            result.error("busy", "已有文件选择正在进行中", null)
+            return
+        }
+        pendingPick = result
+        val picker = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "*/*"
+            putExtra(
+                Intent.EXTRA_MIME_TYPES,
+                arrayOf("application/zip", "application/x-zip-compressed", "application/octet-stream")
+            )
+        }
+        try {
+            startActivityForResult(picker, REQ_PICK_BACKUP)
+        } catch (e: Exception) {
+            pendingPick = null
+            result.error("no_picker", "无法打开文件选择器", e.message)
+        }
+    }
+
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode != REQ_PICK_BACKUP) return
+
+        val result = pendingPick
+        pendingPick = null
+        val uri = data?.data
+        if (resultCode != Activity.RESULT_OK || uri == null) {
+            result?.success(null)
+            return
+        }
+        result?.success(importBackup(uri))
+    }
+
+    /**
+     * 导入用的复制：超过上限时返回哨兵字符串而不是 null，
+     * 这样 Dart 侧能把「用户取消」和「文件太大」分开提示。
+     */
+    private fun importBackup(uri: Uri): String {
         return try {
-            val dir = File(filesDir, "share_incoming").apply { mkdirs() }
-            val target = File(dir, "shared_${System.currentTimeMillis()}.jpg")
+            val dir = File(filesDir, "imports").apply { mkdirs() }
+            val target = File(dir, "backup_${System.currentTimeMillis()}.zip")
+            contentResolver.openInputStream(uri)?.use { input ->
+                target.outputStream().use { output -> input.copyTo(output) }
+            }
+            if (target.length() > MAX_IMPORT_BYTES) {
+                target.delete()
+                "too_large"
+            } else {
+                target.absolutePath
+            }
+        } catch (e: Exception) {
+            ""
+        }
+    }
+
+    /** 把内容 Uri 复制到私有目录（图片用） */
+    private fun copyUriTo(uri: Uri, dirName: String, fileName: String): String? {
+        return try {
+            val dir = File(filesDir, dirName).apply { mkdirs() }
+            val target = File(dir, fileName)
             contentResolver.openInputStream(uri)?.use { input ->
                 target.outputStream().use { output -> input.copyTo(output) }
             }
@@ -128,6 +200,8 @@ class MainActivity : FlutterActivity() {
             null
         }
     }
+
+    /* ------------------------------ 导出分享 ------------------------------ */
 
     private fun shareFile(path: String, mime: String, title: String?): Boolean {
         return try {
@@ -145,5 +219,10 @@ class MainActivity : FlutterActivity() {
         } catch (e: Exception) {
             false
         }
+    }
+
+    private companion object {
+        const val REQ_PICK_BACKUP = 1001
+        const val MAX_IMPORT_BYTES = 200L * 1024 * 1024
     }
 }
