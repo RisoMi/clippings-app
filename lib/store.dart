@@ -131,6 +131,7 @@ class ClipStore extends ChangeNotifier {
       // 已经种过数据了。这里默认 true，避免升级后示例数据突然又冒回来。
       // （全新安装时 settings.json 根本不存在，走不到这里，仍会正常种一次。）
       _demoSeeded = map['demoSeeded'] as bool? ?? true;
+      _fetchMetadata = map['fetchMetadata'] as bool? ?? true;
     }
   }
 
@@ -182,6 +183,9 @@ class ClipStore extends ChangeNotifier {
   /// 是否已经种过示例数据。用来区分「首次安装」和「用户主动清空」。
   bool _demoSeeded = false;
 
+  /// 保存链接时是否抓取网页标题（需要联网，可在设置里关闭）
+  bool _fetchMetadata = true;
+
   String get themeMode => _themeMode;
 
   String get exportFormat => _exportFormat;
@@ -189,6 +193,8 @@ class ClipStore extends ChangeNotifier {
   bool get exportGroup => _exportGroup;
 
   bool get exportImages => _exportImages;
+
+  bool get fetchMetadata => _fetchMetadata;
 
   Future<void> setThemeMode(String mode) async {
     if (_themeMode == mode) return;
@@ -205,6 +211,13 @@ class ClipStore extends ChangeNotifier {
     notifyListeners();
   }
 
+  Future<void> setFetchMetadata(bool value) async {
+    if (_fetchMetadata == value) return;
+    _fetchMetadata = value;
+    await _persistSettings();
+    notifyListeners();
+  }
+
   Future<void> _persistSettings() async {
     if (_memoryOnly) return;
     await _atomicWrite(
@@ -215,6 +228,7 @@ class ClipStore extends ChangeNotifier {
         'exportGroup': _exportGroup,
         'exportImages': _exportImages,
         'demoSeeded': _demoSeeded,
+        'fetchMetadata': _fetchMetadata,
       }),
     );
   }

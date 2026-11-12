@@ -251,7 +251,34 @@ class _SettingsPageState extends State<SettingsPage> {
                     style: TextStyle(fontSize: 11, height: 1.75, color: c.accent),
                   ),
                 ),
-                const SizedBox(height: 12),
+                const SizedBox(height: 6),
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 4),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text('保存链接时自动获取标题', style: TextStyle(fontSize: 12, color: c.ink)),
+                            const SizedBox(height: 2),
+                            Text(
+                              '会请求一次网页，只读标题与摘要；关掉后只存链接本身',
+                              style: TextStyle(fontSize: 11, color: c.weak),
+                            ),
+                          ],
+                        ),
+                      ),
+                      Switch(
+                        value: store.fetchMetadata,
+                        onChanged: (value) => store.setFetchMetadata(value),
+                        activeThumbColor: isDark ? const Color(0xFF151917) : Colors.white,
+                        activeTrackColor: c.accent,
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 8),
                 OutlinedButton(
                   onPressed: () => Navigator.of(context).push(
                     MaterialPageRoute(builder: (_) => const PastePage()),

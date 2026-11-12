@@ -155,7 +155,7 @@ Flutter 模板默认给的是 `launchMode="singleTop"` + `taskAffinity=""`，这
 - **iOS 分享入口未实现**（需 macOS，见上）。
 - Flutter 内置 `Clipboard` 只支持文本，图片剪贴板待补（目前图片走系统分享）。
 - 搜索历史仅本次会话内存，未持久化。
-- 不做网页元数据抓取，链接的标题与封面取决于源 APP 给了什么（原因见第 11 节）。
+- 自动抓标题只读网页 `<head>` 里的 og 标签，不做正文提取；`og:image` 只记录地址、不下载封面（封面下载待做）。
 - CI 出的 APK 用 **debug 密钥签名**（Flutter 默认），可直接安装自用；上架应用商店需自行配置正式签名与 `applicationId`。
 
 ## 8. 与 PWA 版本的关系
@@ -165,7 +165,8 @@ Flutter 模板默认给的是 `launchMode="singleTop"` + `taskAffinity=""`，这
 ## 9. 验证记录
 
 - `flutter analyze`：0 error / 0 warning
-- `flutter test`：**47/47 通过**（识别、检索、分组、导出、原文链接、zip 方案分支、CRC32 标准向量、ZIP 结构自洽、示例数据判定、ZIP 解包与坏包拒绝、备份打包解析、合并覆盖判定，另有 6 个存储层用例跑真实读写）
+- `flutter test`：**64/64 通过**（识别、检索、分组、导出、原文链接、zip 方案分支、ZIP 结构、解包与坏包拒绝、备份打包解析、合并覆盖判定、链接标题解析与社交站特判，另有 6 个存储层用例跑真实读写）
+- 抓取链路真网络验证：`dart run tool/metadata_selftest.dart` 对真实推文页与普通站点各跑一次。X 推文 943ms 拿到正文标题（不是账号名），少数派 441ms 拿到站点标题
 - 备份包跨实现校验：`dart run tool/backup_selftest.dart` 产出的包用 **Python `zipfile`** 打开，`testzip()` 无损坏、中文标题与图片字节都正确；反向用 Python 生成 **deflate** 压缩包，被本应用解包器成功解析
 - `dart run tool/zip_selftest.dart` 生成真实压缩包，再用 **Python `zipfile`** 独立校验：`testzip()` 无损坏条目、两条目 CRC 正确、`extractall()` 目录树为 `clips-2026-11-11.md` + `images/img_1.jpg` —— 确认「别的软件真的打得开」
 - `flutter build apk --release`：构建成功（47.9 MB）
@@ -190,7 +191,18 @@ Flutter 模板默认给的是 `launchMode="singleTop"` + `taskAffinity=""`，这
 1. **分享 Intent 只带源 APP 愿意给的东西。** Android `ACTION_SEND` 里没有「标题」「封面」这类字段，只有 `EXTRA_TEXT` / `EXTRA_SUBJECT` / `EXTRA_STREAM`。X（Twitter）分享通常只塞一个裸 URL，所以到我们手里就只有链接。
 2. **预览卡片是「接收方自己抓的」。** 微信显示标题和缩略图，是微信客户端收到链接后**自己去请求网页**，读 `<head>` 里的 Open Graph 标签（`og:title` / `og:image` / `og:description`）再画成卡片。谁抓谁有卡片，不抓就只有一条 URL。
 
-要让本应用也显示标题与封面，需要**自己加网页元数据抓取**（请求页面 → 解析 og 标签 → 下载封面存本地）。这块尚未实现，因为它是一个独立模块：要联网权限、要处理超时/反爬/图片体积限制。**X 尤其难**——它的页面依赖 JS 渲染且拦截非浏览器请求，直接抓 og 标签多数拿不到，通常得走官方 oEmbed / API。
+要让本应用也显示标题，需要**自己加网页元数据抓取**（请求页面 → 解析 og 标签）。
+
+**2026-11-12 实测更正**：我早前在本节写「X 页面依赖 JS 渲染且反爬，直抓 og 基本拿不到」——**这是错的，没验证就下了结论**。实测（带移动端 UA、普通 GET）结果：
+
+```
+GET https://x.com/elonmusk/status/2120589832963711162  → 200, 162KB, 0.7~0.9s
+og:title        "X 上的 Elon Musk (@elonmusk)"          ← 只有账号名，没用
+<title>         "X 上的 Elon Musk：“<推文正文>” / X"     ← 正文在这
+og:description  "<推文正文>"                            ← 也可以用
+```
+
+所以 X **不需要 API、不需要登录、不需要跑 JS**，一次普通请求就能拿到正文。v1.3.0 起本应用已实现，实现方式见第 16 节。
 
 ## 12. 本轮变更（2026-11-11 第二轮）
 
@@ -246,3 +258,41 @@ clippings-backup-YYYY-MM-DD.zip
 3. 新增 `lib/backup.dart`：备份包格式、解析、合并去重与「是否只有示例数据」判定，全部纯函数。
 4. 原生加 `pickBackupFile`：用 `ACTION_OPEN_DOCUMENT` 选文件并复制到私有目录，把「取消 / 文件超限 / 失败」三种结果分开返回。
 5. 单元测试 31 → 47，新增 6 个存储层用例，含「导出 → 清空 → 导入」完整往返与图片一并恢复。
+
+## 16. 链接标题抓取（v1.3.0）
+
+### 为什么需要它
+
+分享进来的只有 URL —— Android `ACTION_SEND` 里没有「标题」这种字段。标题是接收方自己去网页 `<head>` 里读的（微信就是这么做的）。不抓，用户看到的就只有一条光秃秃的链接。
+
+### 怎么工作
+
+1. 拿到 URL（X 分享出来的是 `t.co` 短链）
+2. `HttpClient` 请求并自动跟重定向（最多 6 跳）；若对方用 `meta refresh` 跳转，再补一次请求
+3. 只读前 160KB（og 标签都在 head 里，不必整页）
+4. 解析 `og:title` / `og:description` / `og:image` / `<title>`，按规则挑标题
+5. 把最终 URL 回写到草稿 —— **不要存 t.co 短链，它过一段时间就失效**
+
+### 标题选择规则（这里有坑）
+
+- **普通站点**：`og:title` 优先，没有就退到 `<title>`
+- **X / Twitter**：`og:title` 只有「X 上的某人 (@handle)」，正文在 `<title>` 冒号后面，所以按域名单独分支；账号主页没有正文时用简介兜底
+- **不能一刀切按冒号切**：普通标题也常带冒号（「React: 深入理解」会被砍成「深入理解」）。所以社交规则**只对 `x.com` / `twitter.com` 生效**，并有单测锁住这个行为
+
+### 代价与边界
+
+- 需要 `INTERNET` 权限（release 包不会自动获得，必须显式声明，否则请求直接失败）
+- 一次请求约 160KB / 0.4~1 秒；弱网有 10 秒超时
+- 抓不到不影响保存，标题停在兜底文案，并给一句轻提示
+- 可在「设置 → 分享接入 → 保存链接时自动获取标题」关闭；关掉后完全离线，行为回到 v1.2
+- 封面只记地址不下载：`og:image` 指向站外资源，落地涉及存储管理与失效清理，留到下一步
+
+## 17. 本轮变更（2026-11-12 第二轮）
+
+1. 新增链接标题抓取 `lib/metadata.dart`：跟重定向（含 meta refresh）→ 读前 160KB → 解析 og 与 `<title>` → 挑标题
+2. 社交站特判：X 的 `og:title` 只有账号名，正文从 `<title>` 冒号后取；只对 `x.com` / `twitter.com` 生效，避免截断普通标题
+3. 抓到真实地址后回写草稿的 url / domain / source，不再保存会失效的 t.co 短链
+4. `PasteDraft.url`、`domain` 改为可变；确认页显示「正在获取标题…」
+5. `AndroidManifest` 显式声明 `INTERNET`；设置页加开关，默认开启、可关闭
+6. 测试 47 → 64，新增真网络自检脚本 `tool/metadata_selftest.dart`
+7. 更正第 11 节的错误结论（曾断言 X 抓不到 og，实测可以）

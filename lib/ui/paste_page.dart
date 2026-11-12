@@ -8,6 +8,7 @@ import 'package:flutter/services.dart';
 
 import '../bridge.dart';
 import '../core.dart';
+import '../metadata.dart';
 import '../models.dart';
 import '../store.dart';
 import '../theme.dart';
@@ -19,8 +20,11 @@ class PasteDraft {
   String title;
   String summary;
   String source;
-  final String url;
-  final String domain;
+
+  /// 可变：抓到网页后会把 t.co 短链换成真实地址，存短链以后会失效
+  String url;
+  String domain;
+
   final List<String> tags;
   final String? imagePath;
 
@@ -97,6 +101,7 @@ class _PastePageState extends State<PastePage> {
   final TextEditingController _manual = TextEditingController();
   PasteDraft? _draft;
   bool _busy = false;
+  bool _fetching = false;
 
   bool get _isManual => widget.mode == PasteMode.manual;
 
@@ -108,6 +113,9 @@ class _PastePageState extends State<PastePage> {
     // 放在首帧之后：这时页面已经铺好，读不到也能安静停在空状态。
     if (_draft == null && widget.mode == PasteMode.clipboard) {
       WidgetsBinding.instance.addPostFrameCallback((_) => _readClipboard(silent: true));
+    } else if (_draft != null && _draft!.url.trim().isNotEmpty) {
+      // 分享进来的链接：马上抓一次标题，用户看到的就不是光秃秃一条 URL
+      WidgetsBinding.instance.addPostFrameCallback((_) => _enrichFromWeb());
     }
   }
 
@@ -144,6 +152,7 @@ class _PastePageState extends State<PastePage> {
           tags: suggestTags(detected, ClipStore.instance.tagCounts),
         );
       });
+      if (detected.url.isNotEmpty) await _enrichFromWeb();
     } catch (_) {
       if (!silent && mounted) showToast(context, '读取剪贴板被拒绝，请手动粘贴');
     } finally {
@@ -173,6 +182,47 @@ class _PastePageState extends State<PastePage> {
         tags: suggestTags(detected, ClipStore.instance.tagCounts),
       );
     });
+    if (detected.url.isNotEmpty) _enrichFromWeb();
+  }
+
+  /// 抓网页标题 / 摘要。失败不影响保存，只是标题停在自动生成的兜底文案。
+  Future<void> _enrichFromWeb() async {
+    final draft = _draft;
+    if (draft == null || draft.url.trim().isEmpty) return;
+    if (!ClipStore.instance.fetchMetadata) return;
+    if (!mounted) return;
+
+    setState(() => _fetching = true);
+    final result = await fetchLinkMetadata(draft.url);
+    if (!mounted) return;
+
+    setState(() {
+      _fetching = false;
+      final data = result.data;
+      if (data == null) return;
+
+      // 短链解析出的真实地址要回写：t.co 这类链接过一阵就失效了
+      final resolved = data.finalUrl.trim();
+      if (resolved.isNotEmpty && resolved != draft.url) {
+        draft.url = resolved;
+        final host = parseDomain(resolved);
+        if (host.isNotEmpty) {
+          draft.domain = host;
+          draft.source = describeSource(resolved);
+        }
+      }
+
+      final title = data.title?.trim() ?? '';
+      if (title.isNotEmpty) draft.title = title;
+
+      final desc = data.description?.trim() ?? '';
+      if (desc.isNotEmpty && desc != title) draft.summary = desc;
+    });
+
+    final error = result.error;
+    if (error != null && error != '页面里没有标题信息' && mounted) {
+      showToast(context, '没能获取标题：$error');
+    }
   }
 
   Future<void> _save() async {
@@ -349,9 +399,23 @@ class _PastePageState extends State<PastePage> {
     return ListView(
       padding: const EdgeInsets.fromLTRB(20, 6, 20, 40),
       children: [
-        Text(
-          '识别完成 · ${draft.type.label}',
-          style: TextStyle(fontSize: 12, color: c.sub, fontWeight: FontWeight.w500),
+        Row(
+          children: [
+            Text(
+              '识别完成 · ${draft.type.label}',
+              style: TextStyle(fontSize: 12, color: c.sub, fontWeight: FontWeight.w500),
+            ),
+            if (_fetching) ...[
+              const SizedBox(width: 8),
+              SizedBox(
+                width: 11,
+                height: 11,
+                child: CircularProgressIndicator(strokeWidth: 1.6, color: c.accent),
+              ),
+              const SizedBox(width: 5),
+              Text('正在获取标题…', style: TextStyle(fontSize: 11, color: c.accent)),
+            ],
+          ],
         ),
         const SizedBox(height: 4),
         Text(

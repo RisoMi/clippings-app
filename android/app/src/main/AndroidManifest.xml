@@ -1,4 +1,8 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- 保存链接时抓一次网页标题（只读网页 head，不发送任何本机数据）。
+         release 包不会自动获得 INTERNET 权限，必须显式声明，否则请求直接失败。 -->
+    <uses-permission android:name="android.permission.INTERNET"/>
+
     <application
         android:label="剪藏库"
         android:name="${applicationName}"

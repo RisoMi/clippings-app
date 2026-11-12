@@ -393,3 +393,12 @@ ExportPlan planExport(
 /// 光判断「列表为空」会把「用户主动清空」误当成「首次安装」。
 bool shouldSeedDemo({required bool hasClips, required bool demoSeeded}) =>
     !hasClips && !demoSeeded;
+
+/// 展示用的来源文案：「站点名 · 域名」。
+/// 抓到真实地址后要把 t.co 之类的短链换掉，来源也得跟着更新。
+String describeSource(String url) {
+  final domain = parseDomain(url);
+  if (domain.isEmpty) return '剪藏库';
+  final site = _siteNames[domain] ?? domain;
+  return '$site · $domain';
+}
