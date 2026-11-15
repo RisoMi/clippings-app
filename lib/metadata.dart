@@ -184,8 +184,10 @@ LinkMetadata parseHtmlMetadata(String html, {String finalUrl = ''}) {
       htmlTitle: htmlTitle,
       ogDescription: ogDesc,
       host: hostOf(finalUrl),
+      handle: handleFromUrl(finalUrl),
     ),
-    description: ogDesc == null ? null : _limit(ogDesc, 200),
+    // 警告语连摘要也别写，否则列表里同样会看到那句「受年龄限制的成人内容」
+    description: (ogDesc == null || isPlaceholderText(ogDesc)) ? null : _limit(ogDesc, 200),
     imageUrl: image,
   );
 }
@@ -200,28 +202,78 @@ String? pickTitle({
   String? htmlTitle,
   String? ogDescription,
   String? host,
+  String? handle,
 }) {
   final og = _clean(ogTitle);
   final html = _clean(htmlTitle);
   final desc = _clean(ogDescription);
 
   if (isSocialHost(host)) {
+    // 1) <title> 冒号后面是正文时最理想
     final body = _bodyFromSocialTitle(html);
-    if (body != null) return _limit(body, 120);
-    // 账号页没有正文，简介也比一串账号名有用
-    if (desc != null) return _limit(desc, 120);
-    if (og != null) return _limit(og, 120);
+    if (body != null && !isPlaceholderText(body)) return _limit(body, 120);
+
+    // 2) 摘要一般都就是正文（账号主页则是简介），比账号名信息量大。
+    //    但受年龄限制 / 已删除的推文，X 会把警告语塞进这里，必须挡掉。
+    if (desc != null && !isPlaceholderText(desc)) return _limit(desc, 120);
+
+    if (og != null && !isPlaceholderText(og) && !isSocialAccountTitle(og)) {
+      return _limit(og, 120);
+    }
+    if (og != null && !isPlaceholderText(og)) return _limit(og, 120);
+
+    // 3) 什么都拿不到就用账号名兜底，总比一条警告语强
+    if (handle != null && handle.isNotEmpty) return '@$handle 的推文';
     return null;
   }
 
   // 常规站点：OG 标题一般最干净
-  if (og != null && !isSocialAccountTitle(og)) return _limit(og, 120);
+  if (og != null && !isSocialAccountTitle(og) && !isPlaceholderText(og)) {
+    return _limit(og, 120);
+  }
 
   // 退回 HTML 标题（去掉末尾「/ 站点名」）
   if (html != null) return _limit(_stripSiteSuffix(html), 120);
 
   if (og != null) return _limit(og, 120);
-  return desc == null ? null : _limit(desc, 120);
+  if (desc != null && !isPlaceholderText(desc)) return _limit(desc, 120);
+  return null;
+}
+
+/// 平台塞进页面的「提示语」而不是正文，不能当标题/摘要用。
+///
+/// 典型来源：X 对受年龄限制、已删除、不可见的推文，会把
+/// 「受年龄限制的成人内容。这些内容可能不适合18岁以下的用户。」写进 og 标签。
+/// 只在短文本上判定，避免误伤标题里恰好含这些词的长文章。
+bool isPlaceholderText(String? text) {
+  if (text == null) return false;
+  final value = text.trim();
+  if (value.isEmpty) return false;
+  if (value.length > 120) return false;
+
+  const patterns = [
+    // 中文：年龄限制 / 成人内容 / 内容不可用
+    r'年龄限制|成人内容|18\s*岁以下|不适合\s*18',
+    r'内容不可用|无法显示|帖子不可用|已被删除|暂时无法查看',
+    // 英文：age-restricted / unavailable
+    r'age[\s-]restricted|adult content|under 18|not.{0,12}appropriate',
+    r'content (is )?(not available|unavailable)',
+    r'post (is )?(not available|unavailable)',
+    r'has been removed|isn.{0,3}t available',
+  ];
+  return patterns.any((pattern) => RegExp(pattern, caseSensitive: false).hasMatch(value));
+}
+
+/// 从 `x.com/{handle}/status/{id}` 里取账号名
+String? handleFromUrl(String url) {
+  final uri = Uri.tryParse(url);
+  if (uri == null) return null;
+  final segments = uri.pathSegments;
+  if (segments.length >= 3 && segments[1] == 'status') {
+    final handle = segments[0].trim();
+    if (handle.isNotEmpty) return handle;
+  }
+  return null;
 }
 
 /// X / Twitter 这类站点

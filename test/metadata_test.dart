@@ -98,6 +98,70 @@ void main() {
     });
   });
 
+  group('敏感 / 不可用内容的占位文案', () {
+    test('中文警告语不会被当成标题，也不会进摘要', () {
+      const html = '''
+<html><head>
+<meta property="og:title" content="X 上的 someone (@someone)"/>
+<meta property="og:description" content="受年龄限制的成人内容。这些内容可能不适合18岁以下的用户。" />
+<title>X 上的 someone (@someone)</title>
+</head></html>
+''';
+      final meta = parseHtmlMetadata(html, finalUrl: 'https://x.com/someone/status/123');
+      expect(meta.title, isNot(contains('年龄限制')));
+      expect(meta.title, 'X 上的 someone (@someone)');
+      expect(meta.description, isNull);
+    });
+
+    test('英文警告语同样过滤', () {
+      const html = '''
+<html><head>
+<meta property="og:title" content="X 上的 someone (@someone)"/>
+<meta property="og:description" content="Age-restricted adult content. This content might not be appropriate for people under 18 years old." />
+<title>X 上的 someone (@someone)</title>
+</head></html>
+''';
+      final meta = parseHtmlMetadata(html, finalUrl: 'https://x.com/someone/status/123');
+      expect(meta.title, 'X 上的 someone (@someone)');
+      expect(meta.description, isNull);
+    });
+
+    test('正文正常时不受任何影响', () {
+      const html = '''
+<html><head>
+<meta property="og:description" content="今天试了个新东西" />
+<title>张三 on X: "今天试了个新东西" / X</title>
+</head></html>
+''';
+      final meta = parseHtmlMetadata(html, finalUrl: 'https://x.com/zhangsan/status/9');
+      expect(meta.title, '今天试了个新东西');
+      expect(meta.description, '今天试了个新东西');
+    });
+
+    test('isPlaceholderText 识别中英文提示语', () {
+      expect(isPlaceholderText('受年龄限制的成人内容。这些内容可能不适合18岁以下的用户。'), isTrue);
+      expect(isPlaceholderText('Age-restricted adult content.'), isTrue);
+      expect(isPlaceholderText('此帖子不可用'), isTrue);
+      expect(isPlaceholderText('Content is not available'), isTrue);
+      expect(isPlaceholderText('今天试了个新东西'), isFalse);
+      expect(isPlaceholderText(''), isFalse);
+      expect(isPlaceholderText(null), isFalse);
+    });
+
+    test('长文本里出现这些词不算占位（避免误伤文章标题）', () {
+      final long = '今天我们来聊聊平台如何标注成人内容这类敏感题材的监管讨论与合规边界。' * 5;
+      expect(long.length, greaterThan(120));
+      expect(isPlaceholderText(long), isFalse);
+    });
+
+    test('handleFromUrl 取账号名', () {
+      expect(handleFromUrl('https://x.com/elonmusk/status/2120589832963711162'), 'elonmusk');
+      expect(handleFromUrl('https://twitter.com/foo/status/1'), 'foo');
+      expect(handleFromUrl('https://x.com/elonmusk'), isNull);
+      expect(handleFromUrl('bad url'), isNull);
+    });
+  });
+
   group('标题选择', () {
     test('没有 OG 时退回 <title>', () {
       expect(pickTitle(htmlTitle: '某篇文章标题'), '某篇文章标题');
