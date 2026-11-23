@@ -181,24 +181,25 @@ String formatRelative(DateTime t, {DateTime? now}) {
   return '${_pad2(t.month)}-${_pad2(t.day)}';
 }
 
-List<ClipGroup> groupByDay(List<Clip> clips, {DateTime? now}) {
+/// 某一天在列表里显示的标签：今天 / 昨天 / 具体日期。
+String dayLabel(DateTime t, {DateTime? now}) {
   final current = now ?? DateTime.now();
   final today = _startOfDay(current);
   final yesterday = today.subtract(const Duration(days: 1));
+  if (!t.isBefore(today)) return '今天';
+  if (!t.isBefore(yesterday)) return '昨天';
+  return formatDate(t);
+}
+
+List<ClipGroup> groupByDay(List<Clip> clips, {DateTime? now}) {
+  final current = now ?? DateTime.now();
   final sorted = [...clips]..sort((a, b) => b.createdAt.compareTo(a.createdAt));
 
   final groups = <ClipGroup>[];
   final index = <String, int>{};
 
   for (final clip in sorted) {
-    String label;
-    if (!clip.createdAt.isBefore(today)) {
-      label = '今天';
-    } else if (!clip.createdAt.isBefore(yesterday)) {
-      label = '昨天';
-    } else {
-      label = formatDate(clip.createdAt);
-    }
+    final label = dayLabel(clip.createdAt, now: current);
     final existing = index[label];
     if (existing == null) {
       index[label] = groups.length;
@@ -208,6 +209,50 @@ List<ClipGroup> groupByDay(List<Clip> clips, {DateTime? now}) {
     }
   }
   return groups;
+}
+
+/// 导出页的一天：key 是稳定的 `YYYY-MM-DD`，label 是「今天 / 昨天 / 日期」。
+/// 用 key 而不是 label 做选中态，避免「今天」隔天变成「昨天」后选中丢失。
+class ExportDateGroup {
+  final String key;
+  final String label;
+  final List<Clip> clips;
+
+  const ExportDateGroup({
+    required this.key,
+    required this.label,
+    required this.clips,
+  });
+
+  int get count => clips.length;
+}
+
+/// 只列出「有数据」的日期，按日期从新到旧排序；同一天内按时间从新到旧。
+List<ExportDateGroup> groupByExportDate(List<Clip> clips, {DateTime? now}) {
+  final buckets = <String, List<Clip>>{};
+  for (final clip in clips) {
+    (buckets[formatDate(clip.createdAt)] ??= []).add(clip);
+  }
+  final keys = buckets.keys.toList()..sort((a, b) => b.compareTo(a));
+  final current = now ?? DateTime.now();
+  return [
+    for (final key in keys)
+      ExportDateGroup(
+        key: key,
+        label: dayLabel(buckets[key]!.first.createdAt, now: current),
+        clips: [...buckets[key]!]..sort((a, b) => b.createdAt.compareTo(a.createdAt)),
+      ),
+  ];
+}
+
+/// 默认选中的日期：有今天的数据就选今天，否则退到最近有数据的那天。
+String? defaultExportDateKey(List<ExportDateGroup> groups, {DateTime? now}) {
+  if (groups.isEmpty) return null;
+  final todayKey = formatDate(now ?? DateTime.now());
+  for (final group in groups) {
+    if (group.key == todayKey) return group.key;
+  }
+  return groups.first.key;
 }
 
 String _tagSuffix(Clip clip) =>
@@ -325,12 +370,15 @@ String exportText(
   return '${buffer.toString().trimRight()}\n';
 }
 
-String buildExportBaseName({DateTime? now}) => 'clips-${formatDate(now ?? DateTime.now())}';
+/// fileDate 决定文件名里的日期（导出哪天就用哪天），now 只用于正文的相对时间分组。
+String buildExportBaseName({DateTime? now, DateTime? fileDate}) =>
+    'clips-${formatDate(fileDate ?? now ?? DateTime.now())}';
 
-String buildExportFileName(String format, {DateTime? now}) =>
-    '${buildExportBaseName(now: now)}.${format == 'md' ? 'md' : 'txt'}';
+String buildExportFileName(String format, {DateTime? now, DateTime? fileDate}) =>
+    '${buildExportBaseName(now: now, fileDate: fileDate)}.${format == 'md' ? 'md' : 'txt'}';
 
-String buildExportZipFileName({DateTime? now}) => '${buildExportBaseName(now: now)}.zip';
+String buildExportZipFileName({DateTime? now, DateTime? fileDate}) =>
+    '${buildExportBaseName(now: now, fileDate: fileDate)}.zip';
 
 /// 导出方案：决定产出单个文本文件，还是把正文 + 图片打成压缩包。
 /// 抽成纯函数是为了让「什么时候走 zip、用什么 MIME」能在单测里覆盖，
@@ -362,16 +410,17 @@ ExportPlan planExport(
   bool includeImages = true,
   bool hasImages = false,
   DateTime? now,
+  DateTime? fileDate,
 }) {
   final content = format == 'md'
       ? exportMarkdown(clips, groupByTime: groupByTime, includeImages: includeImages, now: now)
       : exportText(clips, groupByTime: groupByTime, includeImages: includeImages, now: now);
-  final textFileName = buildExportFileName(format, now: now);
+  final textFileName = buildExportFileName(format, now: now, fileDate: fileDate);
 
   // 勾了「包含图片」且确实有图片文件，才值得打成包
   if (includeImages && hasImages) {
     return ExportPlan(
-      fileName: buildExportZipFileName(now: now),
+      fileName: buildExportZipFileName(now: now, fileDate: fileDate),
       textFileName: textFileName,
       mime: 'application/zip',
       content: content,

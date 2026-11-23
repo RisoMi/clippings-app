@@ -370,6 +370,59 @@ void main() {
     });
   });
 
+  group('按日期导出', () {
+    Clip dated(String id, DateTime at) => Clip(
+          id: id,
+          type: ClipType.text,
+          title: id,
+          summary: '',
+          source: '',
+          url: '',
+          domain: '',
+          tags: const [],
+          createdAt: at,
+        );
+
+    final clips = [
+      dated('a', DateTime(2026, 11, 11, 9)),
+      dated('b', DateTime(2026, 11, 11, 15)),
+      dated('c', DateTime(2026, 11, 10, 20)),
+      dated('d', DateTime(2026, 11, 6, 8)),
+    ];
+    final now = DateTime(2026, 11, 11, 18);
+
+    test('只列有数据的日期，按新到旧，每天内按时间倒序', () {
+      final groups = groupByExportDate(clips, now: now);
+      expect(groups.map((g) => g.key).toList(), ['2026-11-11', '2026-11-10', '2026-11-06']);
+      expect(groups.map((g) => g.label).toList(), ['今天', '昨天', '2026-11-06']);
+      expect(groups.first.count, 2);
+      expect(groups.first.clips.map((c) => c.id).toList(), ['b', 'a']);
+    });
+
+    test('默认选中今天；今天没数据则退到最近有数据的那天', () {
+      final groups = groupByExportDate(clips, now: now);
+      expect(defaultExportDateKey(groups, now: now), '2026-11-11');
+      expect(
+        defaultExportDateKey(groups, now: DateTime(2026, 11, 12)),
+        '2026-11-11',
+      );
+      expect(defaultExportDateKey(const [], now: now), isNull);
+    });
+
+    test('文件名用所选日期，正文分组仍按当前日期', () {
+      final day = groupByExportDate(clips, now: now).last;
+      final plan = planExport(
+        day.clips,
+        format: 'md',
+        now: now,
+        fileDate: DateTime.parse(day.key),
+      );
+      expect(plan.fileName, 'clips-2026-11-06.md');
+      expect(plan.content, contains('## 2026-11-06'));
+      expect(plan.content, isNot(contains('## 今天')));
+    });
+  });
+
   group('示例数据判定', () {
     test('首次安装：一条都没有且没种过 → 种', () {
       expect(shouldSeedDemo(hasClips: false, demoSeeded: false), isTrue);

@@ -1,4 +1,4 @@
-/// 06 批量导出：多选、Markdown / 纯文本、图片打包、文件预览。
+/// 06 批量导出：按有数据的日期单选、Markdown / 纯文本、图片打包、文件预览。
 library;
 
 import 'dart:convert';
@@ -23,18 +23,32 @@ class ExportPage extends StatefulWidget {
 }
 
 class _ExportPageState extends State<ExportPage> {
-  final Set<String> _selected = {};
+  String? _selectedKey;
   bool _initialized = false;
   bool _busy = false;
 
-  void _ensureSelection() {
-    if (_initialized) return;
-    _initialized = true;
-    _selected.addAll(ClipStore.instance.clips.map((clip) => clip.id));
+  /// 首次进入默认选中今天（今天没数据则选最近有数据的一天）；
+  /// 选中日期被删空后自动回退，避免停在无效日期上。
+  void _syncSelection(List<ExportDateGroup> groups) {
+    if (!_initialized) {
+      _initialized = true;
+      _selectedKey = defaultExportDateKey(groups);
+      return;
+    }
+    if (_selectedKey != null && !groups.any((g) => g.key == _selectedKey)) {
+      _selectedKey = defaultExportDateKey(groups);
+    }
   }
 
-  List<Clip> get _selectedClips =>
-      ClipStore.instance.clips.where((clip) => _selected.contains(clip.id)).toList();
+  ExportDateGroup? get _selectedGroup {
+    final groups = groupByExportDate(ClipStore.instance.clips);
+    for (final group in groups) {
+      if (group.key == _selectedKey) return group;
+    }
+    return null;
+  }
+
+  List<Clip> get _selectedClips => _selectedGroup?.clips ?? const [];
 
   /// 当前选中的内容里，真实存在于磁盘的图片（文件名 → 文件）
   Future<Map<String, File>> _collectImages(List<Clip> clips) async {
@@ -49,24 +63,27 @@ class _ExportPageState extends State<ExportPage> {
     return result;
   }
 
-  ExportPlan _plan() {
+  ExportPlan _plan({required DateTime fileDate}) {
     final store = ClipStore.instance;
     return planExport(
       _selectedClips,
       format: store.exportFormat,
       groupByTime: store.exportGroup,
       includeImages: store.exportImages,
+      fileDate: fileDate,
     );
   }
 
-  String _preview() {
+  String _preview({required DateTime fileDate}) {
     if (_selectedClips.isEmpty) return '还没有勾选内容。';
-    final lines = _plan().content.split('\n');
+    final lines = _plan(fileDate: fileDate).content.split('\n');
     final head = lines.take(14).join('\n');
     return lines.length > 14 ? '$head\n…' : head;
   }
 
   Future<void> _export() async {
+    final key = _selectedKey;
+    if (key == null) return;
     final clips = _selectedClips;
     if (clips.isEmpty) return;
     setState(() => _busy = true);
@@ -77,7 +94,9 @@ class _ExportPageState extends State<ExportPage> {
 
       final images = store.exportImages ? await _collectImages(clips) : <String, File>{};
       final now = DateTime.now();
+      final fileDate = DateTime.parse(key);
       // hasImages 用「真实存在的图片」判断，避免勾了开关但图已丢失时产出空包
+      // fileDate 只影响文件名；正文里的「今天/昨天」仍按真实当前时间分组
       final plan = planExport(
         clips,
         format: store.exportFormat,
@@ -85,6 +104,7 @@ class _ExportPageState extends State<ExportPage> {
         includeImages: store.exportImages,
         hasImages: images.isNotEmpty,
         now: now,
+        fileDate: fileDate,
       );
 
       final file = File('${dir.path}/${plan.fileName}');
@@ -141,74 +161,65 @@ class _ExportPageState extends State<ExportPage> {
       body: ListenableBuilder(
         listenable: store,
         builder: (context, _) {
-          _ensureSelection();
-          final clips = store.clips;
-          final selectedCount = _selectedClips.length;
-          final allSelected = clips.isNotEmpty && selectedCount == clips.length;
-          final visible = clips.take(8).toList();
+          final groups = groupByExportDate(store.clips);
+          _syncSelection(groups);
+          final selected = _selectedGroup;
+          final selectedCount = selected?.count ?? 0;
+          final fileDate = selected != null ? DateTime.parse(selected.key) : DateTime.now();
+          final visible = selected?.clips.take(8).toList() ?? const <Clip>[];
 
           return SafeArea(
             bottom: false,
             child: ListView(
               padding: const EdgeInsets.fromLTRB(20, 18, 20, 120),
               children: [
-                PageHeader(
-                  eyebrow: '批量导出',
-                  title: '导出内容',
-                  action: TextButton(
-                    onPressed: () {
-                      setState(() {
-                        if (allSelected) {
-                          _selected.clear();
-                        } else {
-                          _selected
-                            ..clear()
-                            ..addAll(clips.map((clip) => clip.id));
-                        }
-                      });
-                    },
-                    child: Text(allSelected ? '取消全选' : '全选'),
-                  ),
-                ),
+                const PageHeader(eyebrow: '批量导出', title: '导出内容'),
                 const SizedBox(height: 4),
                 Text(
-                  '已选 $selectedCount 条 · 共 ${clips.length} 条',
+                  '按日期导出，一次打包某一天的全部收藏。',
                   style: TextStyle(fontSize: 12, color: c.sub),
                 ),
                 const SizedBox(height: 14),
-                if (clips.isEmpty)
+                SectionHeader(title: '选择日期', trailing: groups.isEmpty ? null : '共 ${groups.length} 天'),
+                if (groups.isEmpty)
                   const EmptyView(
                     icon: Icons.ios_share_rounded,
                     title: '还没有内容可导出',
                     description: '先存几条收藏，再回来打包成 Markdown 或纯文本。',
                   )
                 else
+                  for (final group in groups)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 10),
+                      child: _DateRow(
+                        label: group.label,
+                        date: group.key,
+                        count: group.count,
+                        active: group.key == _selectedKey,
+                        onTap: () => setState(() => _selectedKey = group.key),
+                      ),
+                    ),
+                if (selected != null) ...[
+                  const SizedBox(height: 2),
+                  Text(
+                    '${selected.label}共 $selectedCount 条，导出会包含全部内容。',
+                    style: TextStyle(fontSize: 11, color: c.weak),
+                  ),
+                  const SizedBox(height: 10),
                   for (final clip in visible)
                     Padding(
                       padding: const EdgeInsets.only(bottom: 10),
-                      child: ClipCard(
-                        clip: clip,
-                        selectable: true,
-                        selected: _selected.contains(clip.id),
-                        onTap: () {
-                          setState(() {
-                            if (_selected.contains(clip.id)) {
-                              _selected.remove(clip.id);
-                            } else {
-                              _selected.add(clip.id);
-                            }
-                          });
-                        },
+                      child: ClipCard(clip: clip),
+                    ),
+                  if (selectedCount > visible.length)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 2, bottom: 4),
+                      child: Text(
+                        '仅预览前 ${visible.length} 条。',
+                        style: TextStyle(fontSize: 11, color: c.weak),
                       ),
                     ),
-                if (clips.length > visible.length)
-                  Padding(
-                    padding: const EdgeInsets.only(top: 2, bottom: 4),
-                    child: Text(
-                      '仅显示前 ${visible.length} 条，导出会包含全部已勾选内容。',
-                      style: TextStyle(fontSize: 11, color: c.weak),
-                    ),
-                  ),
+                ],
                 const SectionHeader(title: '导出格式'),
                 Row(
                   children: [
@@ -247,7 +258,7 @@ class _ExportPageState extends State<ExportPage> {
                   padding: const EdgeInsets.all(12),
                   decoration: BoxDecoration(color: c.soft, borderRadius: BorderRadius.circular(AppRadii.row)),
                   child: Text(
-                    _preview(),
+                    _preview(fileDate: fileDate),
                     style: TextStyle(fontSize: 11, height: 1.7, color: c.ink, fontFamily: 'monospace'),
                   ),
                 ),
@@ -272,6 +283,84 @@ class _ExportPageState extends State<ExportPage> {
             ),
           );
         },
+      ),
+    );
+  }
+}
+
+class _DateRow extends StatelessWidget {
+  final String label;
+  final String date;
+  final int count;
+  final bool active;
+  final VoidCallback onTap;
+
+  const _DateRow({
+    required this.label,
+    required this.date,
+    required this.count,
+    required this.active,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.colors;
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    return Material(
+      color: c.card,
+      borderRadius: BorderRadius.circular(AppRadii.row),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(AppRadii.row),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(AppRadii.row),
+            border: Border.all(color: active ? c.accent : c.line, width: active ? 1.4 : 1),
+          ),
+          child: Row(
+            children: [
+              Icon(Icons.calendar_month_rounded, size: 18, color: active ? c.accent : c.weak),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      label,
+                      style: TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600,
+                        color: active ? c.accent : c.ink,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(date, style: TextStyle(fontSize: 11, color: c.weak)),
+                  ],
+                ),
+              ),
+              Text('$count 条', style: TextStyle(fontSize: 11, color: c.sub)),
+              const SizedBox(width: 10),
+              Container(
+                width: 20,
+                height: 20,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: active ? c.accent : Colors.transparent,
+                  border: Border.all(color: active ? c.accent : c.weak, width: 1.6),
+                ),
+                child: active
+                    ? Icon(
+                        Icons.check_rounded,
+                        size: 13,
+                        color: isDark ? const Color(0xFF151917) : Colors.white,
+                      )
+                    : null,
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }

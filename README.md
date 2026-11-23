@@ -106,7 +106,7 @@ env -u HTTP_PROXY -u HTTPS_PROXY -u http_proxy -u https_proxy flutter test
 | 03 搜索 | `ui/search_page.dart` | 四字段检索、关键词高亮、类型筛选、未分类入口 |
 | 04 标签 | `ui/tags_page.dart` | 数量聚合、色点、新建/重命名/删除、点标签看内容 |
 | 05 详情 | `ui/detail_page.dart` | 正文、图片、标签增删、复制全文、删除 |
-| 06 批量导出 | `ui/export_page.dart` | 多选/全选、md/txt、**原文链接单列**、**含图片自动打包 zip**、时间分组、前 14 行预览 |
+| 06 批量导出 | `ui/export_page.dart` | **按有数据的日期单选（默认今天）、一次导出当天全部**、md/txt、**原文链接单列**、**含图片自动打包 zip**、时间分组、前 14 行预览 |
 | 07 导出完成 | `ui/done_page.dart` | 文件名/大小/条数（含图片数）、再次分享 |
 | 08 粘贴速存 | `ui/paste_page.dart` | **加号先弹「剪贴板新增 / 手动输入」两选项**、**选剪贴板即自动读取、不用再点一次**、三步条、自动识别、建议标签、手动兜底 |
 | 设置 | `ui/settings_page.dart` | 主题、统计、**导出备份 / 导入备份**、分享说明、示例数据、清空 |
