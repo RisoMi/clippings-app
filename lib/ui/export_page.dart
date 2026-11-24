@@ -1,4 +1,4 @@
-/// 06 批量导出：按有数据的日期单选、Markdown / 纯文本、图片打包、文件预览。
+/// 06 批量导出：按日期单选 + 当天内容可勾选（单选/全选）、md/txt、图片打包、文件预览。
 library;
 
 import 'dart:convert';
@@ -23,32 +23,55 @@ class ExportPage extends StatefulWidget {
 }
 
 class _ExportPageState extends State<ExportPage> {
+  /// 当前选中的日期 key（YYYY-MM-DD）
   String? _selectedKey;
+
+  /// 勾选集合对应的日期。日期一变就把勾选重置为「全选当天」，
+  /// 这样从上一个需求延续下来的「选日期＝导出那天全部」依然成立，同时允许再逐条取消。
+  String? _pickedForKey;
+  final Set<String> _pickedIds = <String>{};
+
   bool _initialized = false;
   bool _busy = false;
 
-  /// 首次进入默认选中今天（今天没数据则选最近有数据的一天）；
-  /// 选中日期被删空后自动回退，避免停在无效日期上。
   void _syncSelection(List<ExportDateGroup> groups) {
     if (!_initialized) {
       _initialized = true;
       _selectedKey = defaultExportDateKey(groups);
-      return;
-    }
-    if (_selectedKey != null && !groups.any((g) => g.key == _selectedKey)) {
+    } else if (_selectedKey != null && !groups.any((g) => g.key == _selectedKey)) {
+      // 选中的日期被删空后自动回退，避免停在无效日期上
       _selectedKey = defaultExportDateKey(groups);
+    }
+
+    final group = _group(groups, _selectedKey);
+    if (_selectedKey != _pickedForKey) {
+      _pickedForKey = _selectedKey;
+      _pickedIds
+        ..clear()
+        ..addAll(group?.clips.map((clip) => clip.id) ?? const <String>[]);
+    } else if (group != null) {
+      // 内容被删掉时顺手清掉失效的勾选，免得计数与实际导出不一致
+      final valid = group.clips.map((clip) => clip.id).toSet();
+      _pickedIds.removeWhere((id) => !valid.contains(id));
     }
   }
 
-  ExportDateGroup? get _selectedGroup {
-    final groups = groupByExportDate(ClipStore.instance.clips);
+  ExportDateGroup? _group(List<ExportDateGroup> groups, String? key) {
+    if (key == null) return null;
     for (final group in groups) {
-      if (group.key == _selectedKey) return group;
+      if (group.key == key) return group;
     }
     return null;
   }
 
-  List<Clip> get _selectedClips => _selectedGroup?.clips ?? const [];
+  ExportDateGroup? get _selectedGroup => _group(groupByExportDate(ClipStore.instance.clips), _selectedKey);
+
+  /// 真正要导出的内容：当前日期里被勾选的那些
+  List<Clip> get _selectedClips {
+    final group = _selectedGroup;
+    if (group == null) return const <Clip>[];
+    return group.clips.where((clip) => _pickedIds.contains(clip.id)).toList();
+  }
 
   /// 当前选中的内容里，真实存在于磁盘的图片（文件名 → 文件）
   Future<Map<String, File>> _collectImages(List<Clip> clips) async {
@@ -75,7 +98,8 @@ class _ExportPageState extends State<ExportPage> {
   }
 
   String _preview({required DateTime fileDate}) {
-    if (_selectedClips.isEmpty) return '还没有勾选内容。';
+    final clips = _selectedClips;
+    if (clips.isEmpty) return '还没有勾选内容。';
     final lines = _plan(fileDate: fileDate).content.split('\n');
     final head = lines.take(14).join('\n');
     return lines.length > 14 ? '$head\n…' : head;
@@ -164,9 +188,11 @@ class _ExportPageState extends State<ExportPage> {
           final groups = groupByExportDate(store.clips);
           _syncSelection(groups);
           final selected = _selectedGroup;
-          final selectedCount = selected?.count ?? 0;
+          final selectedCount = _selectedClips.length;
           final fileDate = selected != null ? DateTime.parse(selected.key) : DateTime.now();
-          final visible = selected?.clips.take(8).toList() ?? const <Clip>[];
+          final allPicked = selected != null &&
+              selected.clips.isNotEmpty &&
+              selected.clips.every((clip) => _pickedIds.contains(clip.id));
 
           return SafeArea(
             bottom: false,
@@ -176,7 +202,7 @@ class _ExportPageState extends State<ExportPage> {
                 const PageHeader(eyebrow: '批量导出', title: '导出内容'),
                 const SizedBox(height: 4),
                 Text(
-                  '按日期导出，一次打包某一天的全部收藏。',
+                  '先选日期，再勾选当天要导出的内容。',
                   style: TextStyle(fontSize: 12, color: c.sub),
                 ),
                 const SizedBox(height: 14),
@@ -201,22 +227,41 @@ class _ExportPageState extends State<ExportPage> {
                     ),
                 if (selected != null) ...[
                   const SizedBox(height: 2),
-                  Text(
-                    '${selected.label}共 $selectedCount 条，导出会包含全部内容。',
-                    style: TextStyle(fontSize: 11, color: c.weak),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          '${selected.label} · 已选 $selectedCount / ${selected.count} 条',
+                          style: TextStyle(fontSize: 11, color: c.weak),
+                        ),
+                      ),
+                      TextButton(
+                        onPressed: () => setState(() {
+                          if (allPicked) {
+                            _pickedIds.clear();
+                          } else {
+                            _pickedIds.addAll(selected.clips.map((clip) => clip.id));
+                          }
+                        }),
+                        child: Text(allPicked ? '取消全选' : '全选', style: const TextStyle(fontSize: 12)),
+                      ),
+                    ],
                   ),
-                  const SizedBox(height: 10),
-                  for (final clip in visible)
+                  const SizedBox(height: 4),
+                  for (final clip in selected.clips)
                     Padding(
                       padding: const EdgeInsets.only(bottom: 10),
-                      child: ClipCard(clip: clip),
-                    ),
-                  if (selectedCount > visible.length)
-                    Padding(
-                      padding: const EdgeInsets.only(top: 2, bottom: 4),
-                      child: Text(
-                        '仅预览前 ${visible.length} 条。',
-                        style: TextStyle(fontSize: 11, color: c.weak),
+                      child: ClipCard(
+                        clip: clip,
+                        selectable: true,
+                        selected: _pickedIds.contains(clip.id),
+                        onTap: () => setState(() {
+                          if (_pickedIds.contains(clip.id)) {
+                            _pickedIds.remove(clip.id);
+                          } else {
+                            _pickedIds.add(clip.id);
+                          }
+                        }),
                       ),
                     ),
                 ],

@@ -25,6 +25,7 @@ class PasteDraft {
   String url;
   String domain;
 
+  /// 由用户在「选择标签」里手动勾选，默认空；这里必须是可修改的列表
   final List<String> tags;
   final String? imagePath;
 
@@ -42,8 +43,6 @@ class PasteDraft {
 
 /// 系统分享内容 → 草稿
 PasteDraft? buildDraftFromShare(SharePayload payload) {
-  final known = ClipStore.instance.tagCounts;
-
   if (payload.type == 'image' && (payload.imagePath?.isNotEmpty ?? false)) {
     final now = DateTime.now();
     final detected = Detected(
@@ -61,7 +60,7 @@ PasteDraft? buildDraftFromShare(SharePayload payload) {
       source: detected.source,
       url: '',
       domain: '',
-      tags: suggestTags(detected, known),
+      tags: <String>[],
       imagePath: payload.imagePath,
     );
   }
@@ -80,7 +79,7 @@ PasteDraft? buildDraftFromShare(SharePayload payload) {
     source: detected.source,
     url: detected.url,
     domain: detected.domain,
-    tags: suggestTags(detected, known),
+    tags: <String>[],
   );
 }
 
@@ -149,7 +148,7 @@ class _PastePageState extends State<PastePage> {
           source: detected.source,
           url: detected.url,
           domain: detected.domain,
-          tags: suggestTags(detected, ClipStore.instance.tagCounts),
+          tags: <String>[],
         );
       });
       if (detected.url.isNotEmpty) await _enrichFromWeb();
@@ -179,7 +178,7 @@ class _PastePageState extends State<PastePage> {
         source: detected.source,
         url: detected.url,
         domain: detected.domain,
-        tags: suggestTags(detected, ClipStore.instance.tagCounts),
+        tags: <String>[],
       );
     });
     if (detected.url.isNotEmpty) _enrichFromWeb();
@@ -256,12 +255,26 @@ class _PastePageState extends State<PastePage> {
     }
   }
 
+  /// 点已有标签：选中 / 取消，纯手动，不替用户猜
+  void _toggleTag(String name) {
+    final draft = _draft;
+    if (draft == null) return;
+    setState(() {
+      if (draft.tags.contains(name)) {
+        draft.tags.remove(name);
+      } else {
+        draft.tags.add(name);
+      }
+    });
+  }
+
+  /// 新增标签：落到标签管理里，顺手选中
   Future<void> _addTag() async {
     final controller = TextEditingController();
     final name = await showDialog<String>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('添加标签', style: TextStyle(fontSize: 16)),
+        title: const Text('新增标签', style: TextStyle(fontSize: 16)),
         content: TextField(
           controller: controller,
           autofocus: true,
@@ -279,6 +292,8 @@ class _PastePageState extends State<PastePage> {
     );
     final trimmed = (name ?? '').trim();
     if (trimmed.isEmpty || _draft == null) return;
+    await ClipStore.instance.ensureTags([trimmed]);
+    if (!mounted || _draft == null) return;
     if (!_draft!.tags.contains(trimmed)) {
       setState(() => _draft!.tags.add(trimmed));
     }
@@ -396,6 +411,7 @@ class _PastePageState extends State<PastePage> {
 
   Widget _buildConfirm(BuildContext context, PasteDraft draft) {
     final c = context.colors;
+    final existingTags = ClipStore.instance.tags;
     return ListView(
       padding: const EdgeInsets.fromLTRB(20, 6, 20, 40),
       children: [
@@ -464,22 +480,26 @@ class _PastePageState extends State<PastePage> {
         const SizedBox(height: 16),
         Row(
           children: [
-            Text('建议标签', style: TextStyle(fontSize: 12, color: c.sub)),
-            const SizedBox(width: 10),
-            Expanded(
-              child: Wrap(
-                spacing: 8,
-                runSpacing: 8,
-                children: [
-                  for (final tag in draft.tags)
-                    GestureDetector(
-                      onTap: () => setState(() => draft.tags.remove(tag)),
-                      child: TagPill(label: '$tag  ×'),
-                    ),
-                  TagPill(label: '+ 添加标签', ghost: true, onTap: _addTag),
-                ],
+            Text('选择标签', style: TextStyle(fontSize: 12, color: c.sub)),
+            const SizedBox(width: 8),
+            Text('可选，不选则无标签', style: TextStyle(fontSize: 11, color: c.weak)),
+          ],
+        ),
+        const SizedBox(height: 8),
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          crossAxisAlignment: WrapCrossAlignment.center,
+          children: [
+            for (final tag in existingTags)
+              GestureDetector(
+                onTap: () => _toggleTag(tag.name),
+                child: TagPill(
+                  label: draft.tags.contains(tag.name) ? '✓ ${tag.name}' : tag.name,
+                  ghost: !draft.tags.contains(tag.name),
+                ),
               ),
-            ),
+            TagPill(label: '+ 新增标签', ghost: true, onTap: _addTag),
           ],
         ),
         const SizedBox(height: 24),

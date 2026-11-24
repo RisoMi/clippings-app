@@ -29,11 +29,21 @@ android {
         versionName = flutter.versionName
     }
 
+    // 固定签名密钥：仓库里带一把标准 debug.keystore，本地与 CI 共用。
+    // 之前 release 直接用 signingConfigs.debug，CI runner 每次都是新机器，
+    // 会自动生成一把新的 debug key —— 签名一变，用户就无法覆盖安装。
+    signingConfigs {
+        create("release") {
+            storeFile = file("debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
+    }
+
     buildTypes {
         release {
-            // TODO: Add your own signing config for the release build.
-            // Signing with the debug keys for now, so `flutter run --release` works.
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.getByName("release")
         }
     }
 }

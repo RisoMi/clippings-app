@@ -156,6 +156,27 @@ jobs:
           done
           exit $FAIL
 
+      # 签名固定性断言：release 必须用仓库里的 debug.keystore 签。
+      # 之前用 runner 自动生成的 debug key，每次 CI 都是新机器 → 新证书，
+      # 用户装不上新版。这里直接校验成品的证书指纹，防止配置被改回去。
+      - name: 校验 APK 签名指纹
+        run: |
+          set -euo pipefail
+          APK=build/app/outputs/flutter-apk/app-release.apk
+          APKSIGNER=$(find "${ANDROID_HOME}/build-tools" -name apksigner -type f 2>/dev/null | sort -V | tail -1)
+          if [ -z "$APKSIGNER" ]; then
+            echo "::warning::未找到 apksigner，跳过签名校验"
+            exit 0
+          fi
+          DIGEST=$("$APKSIGNER" verify --print-certs "$APK" | grep 'SHA-256 digest' | head -1 | awk '{print $NF}')
+          EXPECT="0425e62ac3beba7cddb3558a0b471664b82529c03760a6f085ec7089058d5a5a"
+          echo "签名 SHA-256: $DIGEST"
+          if [ "$DIGEST" != "$EXPECT" ]; then
+            echo "❌ 签名不是仓库固定密钥，会导致用户无法覆盖升级"
+            exit 1
+          fi
+          echo "✅ 签名与仓库固定密钥一致"
+
       - name: 上传 APK 产物
         uses: actions/upload-artifact@v4
         with:
@@ -188,7 +209,7 @@ jobs:
               --title "剪藏库 $TAG" \
               --notes "自动构建于 ${GITHUB_SHA:0:7}。
 
-          - 安装包：$ASSET（Release，已用 debug 密钥签名，可直接安装）
+          - 安装包：$ASSET（Release，已用仓库内固定密钥签名；旧版若提示签名不同，卸载一次即可，之后可覆盖升级）
           - 要求：Android 6.0 及以上
           - 装好后在任意 APP 的分享面板里选择「剪藏库」即可保存内容
           - 版本名跟随 tag；同一 tag 重跑会覆盖此附件" \

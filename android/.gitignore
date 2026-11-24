@@ -12,3 +12,8 @@ GeneratedPluginRegistrant.java
 key.properties
 **/*.keystore
 **/*.jks
+
+# 例外：app/debug.keystore 必须入库——本地与 CI 共用同一把签名密钥，
+# 否则每次 CI 自动生成的 debug key 都不同，用户无法覆盖升级。
+# 这是 Android 公开的调试密钥（alias=androiddebugkey / password=android），不含私密信息。
+!app/debug.keystore
