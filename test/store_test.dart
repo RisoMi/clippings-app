@@ -183,4 +183,50 @@ void main() {
     expect(total, 2);
     expect(store.clips.map((c) => c.id), containsAll(['local-1', 'local-2']));
   });
+
+  test('编辑后的内容重启仍在，且没有变成第二条', () async {
+    final store = ClipStore.instance;
+    await store.init();
+    await store.clearAll();
+
+    await store.addClip(
+      Clip(
+        id: 'edit-persist',
+        type: ClipType.text,
+        title: '原标题',
+        summary: '原正文',
+        source: '剪贴板 · 文本',
+        url: '',
+        domain: '',
+        tags: const [],
+        createdAt: DateTime(2026, 11, 26, 10),
+      ),
+    );
+
+    final original = store.clips.first;
+    await store.updateClip(
+      original.copyWith(
+        type: ClipType.link,
+        title: '改过的标题',
+        summary: '改过的正文',
+        source: '少数派 · sspai.com',
+        url: 'https://sspai.com/post/1',
+        domain: 'sspai.com',
+        tags: const ['新标签'],
+        createdAt: DateTime(2026, 11, 20, 9),
+      ),
+    );
+
+    store.resetForTest();
+    Bridge.resetCacheForTest();
+    await store.init();
+
+    expect(store.clips.length, 1);
+    expect(store.clips.first.id, 'edit-persist');
+    expect(store.clips.first.title, '改过的标题');
+    expect(store.clips.first.url, 'https://sspai.com/post/1');
+    expect(store.clips.first.type, ClipType.link);
+    expect(store.clips.first.tags, ['新标签']);
+    expect(store.clips.first.createdAt, DateTime(2026, 11, 20, 9));
+  });
 }

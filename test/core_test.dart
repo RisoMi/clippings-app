@@ -437,4 +437,84 @@ void main() {
       expect(shouldSeedDemo(hasClips: true, demoSeeded: true), isFalse);
     });
   });
+
+  group('编辑收藏', () {
+    Clip base({ClipType type = ClipType.text, String url = '', String? image}) => Clip(
+          id: 'edit-1',
+          type: type,
+          title: '原标题',
+          summary: '原正文',
+          source: type == ClipType.link ? '少数派 · sspai.com' : '剪贴板 · 文本',
+          url: url,
+          domain: parseDomain(url),
+          tags: const ['旧标签'],
+          createdAt: DateTime(2026, 11, 26, 10),
+          imageFileName: image,
+        );
+
+    test('改链接后类型、域名、来源一起更新', () {
+      final edited = buildEditedClip(
+        base(),
+        title: '新标题',
+        summary: '新正文',
+        url: 'https://www.sspai.com/post/1',
+        tags: const ['新标签'],
+        createdAt: DateTime(2026, 11, 20, 9),
+      );
+      expect(edited.type, ClipType.link);
+      expect(edited.domain, 'sspai.com');
+      expect(edited.source, '少数派 · sspai.com');
+      expect(edited.title, '新标题');
+      expect(edited.summary, '新正文');
+      expect(edited.tags, ['新标签']);
+      expect(edited.createdAt, DateTime(2026, 11, 20, 9));
+      expect(edited.id, 'edit-1', reason: '编辑不能变成新条目');
+    });
+
+    test('手输不带协议的链接自动补 https，并去掉粘贴带进来的中文标点', () {
+      final edited = buildEditedClip(
+        base(),
+        title: '标题',
+        summary: '',
+        url: 'example.com/a，',
+        tags: const [],
+        createdAt: DateTime(2026, 11, 26, 10),
+      );
+      expect(edited.url, 'https://example.com/a');
+      expect(edited.type, ClipType.link);
+      expect(edited.domain, 'example.com');
+    });
+
+    test('清空链接后退回文本；标题留空时保留原标题', () {
+      final original = base(type: ClipType.link, url: 'https://sspai.com/post/1');
+      final edited = buildEditedClip(
+        original,
+        title: '   ',
+        summary: '正文',
+        url: '',
+        tags: const [],
+        createdAt: original.createdAt,
+      );
+      expect(edited.type, ClipType.text);
+      expect(edited.title, '原标题');
+      expect(edited.source, '剪藏库 · 文本');
+      expect(edited.url, isEmpty);
+      expect(edited.domain, isEmpty);
+    });
+
+    test('图片收藏即使填了链接也仍是图片类型', () {
+      final original = base(image: 'pic.jpg');
+      final edited = buildEditedClip(
+        original,
+        title: '图',
+        summary: '',
+        url: 'https://sspai.com/a',
+        tags: const [],
+        createdAt: original.createdAt,
+      );
+      expect(edited.type, ClipType.image);
+      expect(edited.imageFileName, 'pic.jpg');
+      expect(edited.url, 'https://sspai.com/a');
+    });
+  });
 }

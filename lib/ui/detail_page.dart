@@ -1,4 +1,4 @@
-/// 05 内容详情：查看、改标签、复制全文、打开原文、删除。
+/// 05 内容详情：查看、编辑、改标签、复制全文、打开原文、删除。
 library;
 
 import 'package:flutter/material.dart';
@@ -9,6 +9,7 @@ import '../models.dart';
 import '../store.dart';
 import '../theme.dart';
 import '../widgets.dart';
+import 'edit_page.dart';
 
 class DetailPage extends StatelessWidget {
   final String clipId;
@@ -95,9 +96,22 @@ class DetailPage extends StatelessWidget {
             builder: (context, _) {
               final clip = ClipStore.instance.clips.where((item) => item.id == clipId).firstOrNull;
               if (clip == null) return const SizedBox.shrink();
-              return IconButton(
-                icon: Icon(Icons.delete_outline_rounded, size: 20, color: c.danger),
-                onPressed: () => _delete(context, clip),
+              return Row(
+                children: [
+                  IconButton(
+                    tooltip: '编辑',
+                    icon: const Icon(Icons.edit_outlined, size: 20),
+                    onPressed: () => Navigator.of(context).push(
+                      MaterialPageRoute(builder: (_) => EditPage(clipId: clipId)),
+                    ),
+                  ),
+                  IconButton(
+                    tooltip: '删除',
+                    icon: Icon(Icons.delete_outline_rounded, size: 20, color: c.danger),
+                    onPressed: () => _delete(context, clip),
+                  ),
+                  const SizedBox(width: 4),
+                ],
               );
             },
           ),
@@ -210,6 +224,14 @@ class DetailPage extends StatelessWidget {
                 ),
               ],
               const SizedBox(height: 20),
+              FilledButton.icon(
+                onPressed: () => Navigator.of(context).push(
+                  MaterialPageRoute(builder: (_) => EditPage(clipId: clipId)),
+                ),
+                icon: const Icon(Icons.edit_note_rounded, size: 18),
+                label: const Text('编辑这条收藏'),
+              ),
+              const SizedBox(height: 10),
               OutlinedButton.icon(
                 onPressed: () => _copy(context, clip),
                 icon: const Icon(Icons.content_copy_rounded, size: 17),

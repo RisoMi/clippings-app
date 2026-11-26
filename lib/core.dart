@@ -451,3 +451,48 @@ String describeSource(String url) {
   final site = _siteNames[domain] ?? domain;
   return '$site · $domain';
 }
+
+/// 编辑表单 → 更新后的收藏。
+/// 类型、域名、来源都是 url 的派生字段，统一在这里算，避免编辑后
+/// 「链接已经换了，站点名还是旧的」或「链接删了但类型还是链接」。
+///
+/// 标题留空时保留原标题：空标题会让列表卡片和导出文件变成空白行。
+Clip buildEditedClip(
+  Clip original, {
+  required String title,
+  required String summary,
+  required String url,
+  required List<String> tags,
+  required DateTime createdAt,
+}) {
+  final trimmedTitle = title.trim();
+  final nextTitle = trimmedTitle.isEmpty ? original.title : trimmedTitle;
+
+  // 手输地址常常不带协议；顺手去掉从别处粘贴时带过来的中文收尾标点
+  var nextUrl = url.trim().replaceAll(RegExp(r'[，。；、）】\s]+$'), '');
+  if (nextUrl.isNotEmpty && !nextUrl.contains('://')) {
+    nextUrl = 'https://$nextUrl';
+  }
+
+  final hasImage = original.imageFileName != null;
+  final nextType = hasImage
+      ? ClipType.image
+      : (nextUrl.isNotEmpty ? ClipType.link : ClipType.text);
+  final nextDomain = nextUrl.isEmpty ? '' : parseDomain(nextUrl);
+
+  // 原来有链接、用户清空了：来源别再挂着旧站点名
+  final nextSource = nextUrl.isNotEmpty
+      ? describeSource(nextUrl)
+      : (original.type == ClipType.link && !hasImage ? '剪藏库 · 文本' : original.source);
+
+  return original.copyWith(
+    type: nextType,
+    title: nextTitle,
+    summary: summary.trim(),
+    source: nextSource,
+    url: nextUrl,
+    domain: nextDomain,
+    tags: tags,
+    createdAt: createdAt,
+  );
+}

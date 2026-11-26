@@ -46,22 +46,27 @@ class Clip {
   });
 
   Clip copyWith({
+    ClipType? type,
     String? title,
     String? summary,
+    String? source,
+    String? url,
+    String? domain,
     List<String>? tags,
+    DateTime? createdAt,
     int? readCount,
     String? imageFileName,
   }) {
     return Clip(
       id: id,
-      type: type,
+      type: type ?? this.type,
       title: title ?? this.title,
       summary: summary ?? this.summary,
-      source: source,
-      url: url,
-      domain: domain,
+      source: source ?? this.source,
+      url: url ?? this.url,
+      domain: domain ?? this.domain,
       tags: tags ?? this.tags,
-      createdAt: createdAt,
+      createdAt: createdAt ?? this.createdAt,
       imageFileName: imageFileName ?? this.imageFileName,
       readCount: readCount ?? this.readCount,
     );
